@@ -51,7 +51,7 @@
     <Thickness x:Key="Gap.Section">0,0,0,16</Thickness><Thickness x:Key="Gap.Title">0,0,0,16</Thickness><Thickness x:Key="Gap.Subtitle">0,8,0,0</Thickness>
     <Thickness x:Key="Gap.FieldLabel">0,8,0,8</Thickness><Thickness x:Key="Gap.LeftColumn">0</Thickness><Thickness x:Key="Gap.RightColumn">0</Thickness>
     <Thickness x:Key="Gap.Icon">0,0,8,0</Thickness><Thickness x:Key="Gap.CategoryIcon">0,0,16,0</Thickness><Thickness x:Key="Gap.Check">0,0,12,0</Thickness>
-    <Thickness x:Key="Gap.Chevron">16,0,0,0</Thickness><Thickness x:Key="Gap.Tile">4</Thickness><Thickness x:Key="Gap.Footer">0,24,0,0</Thickness>
+    <Thickness x:Key="Gap.Chevron">16,0,0,0</Thickness><Thickness x:Key="Gap.Tile">4</Thickness><Thickness x:Key="Gap.Footer">0,16,0,0</Thickness>
     <Thickness x:Key="Gap.Status">0,0,0,12</Thickness><Thickness x:Key="Border.Control">1</Thickness><Thickness x:Key="Border.Focus">2</Thickness>
     <CornerRadius x:Key="Radius.Control">4</CornerRadius><CornerRadius x:Key="Radius.Panel">8</CornerRadius><CornerRadius x:Key="Radius.Check">4</CornerRadius><CornerRadius x:Key="Radius.Scrollbar">3</CornerRadius>
 

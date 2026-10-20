@@ -45,12 +45,13 @@
     <sys:Double x:Key="Size.SaveWidth">132</sys:Double><sys:Double x:Key="Size.Scrollbar">16</sys:Double>
     <sys:Double x:Key="Size.ScrollThumb">2</sys:Double><sys:Double x:Key="Size.ScrollThumbExpanded">6</sys:Double>
     <Thickness x:Key="Pad.Canvas">24</Thickness><Thickness x:Key="Pad.Panel">16</Thickness><Thickness x:Key="Pad.Control">12,6</Thickness>
+    <Thickness x:Key="Gap.SettingsScroll">0,0,-24,0</Thickness>
     <Thickness x:Key="Pad.Check">0,6</Thickness><Thickness x:Key="Pad.SectionContent">16,8,16,16</Thickness><Thickness x:Key="Pad.Popup">8</Thickness>
     <Thickness x:Key="Pad.Preview">0,16,0,0</Thickness><Thickness x:Key="Gap.Row">0,0,0,8</Thickness>
     <Thickness x:Key="Gap.Section">0,0,0,16</Thickness><Thickness x:Key="Gap.Title">0,0,0,16</Thickness><Thickness x:Key="Gap.Subtitle">0,8,0,0</Thickness>
     <Thickness x:Key="Gap.FieldLabel">0,8,0,8</Thickness><Thickness x:Key="Gap.LeftColumn">0</Thickness><Thickness x:Key="Gap.RightColumn">0</Thickness>
     <Thickness x:Key="Gap.Icon">0,0,8,0</Thickness><Thickness x:Key="Gap.CategoryIcon">0,0,16,0</Thickness><Thickness x:Key="Gap.Check">0,0,12,0</Thickness>
-    <Thickness x:Key="Gap.Chevron">16,0,0,0</Thickness><Thickness x:Key="Gap.Tile">4</Thickness><Thickness x:Key="Gap.Footer">0,16,0,0</Thickness>
+    <Thickness x:Key="Gap.Chevron">16,0,0,0</Thickness><Thickness x:Key="Gap.Tile">4</Thickness><Thickness x:Key="Gap.Footer">0,24,0,0</Thickness>
     <Thickness x:Key="Gap.Status">0,0,0,12</Thickness><Thickness x:Key="Border.Control">1</Thickness><Thickness x:Key="Border.Focus">2</Thickness>
     <CornerRadius x:Key="Radius.Control">4</CornerRadius><CornerRadius x:Key="Radius.Panel">8</CornerRadius><CornerRadius x:Key="Radius.Check">4</CornerRadius><CornerRadius x:Key="Radius.Scrollbar">3</CornerRadius>
 
@@ -230,7 +231,7 @@
     </Style>
 
     <Style x:Key="ScrollPageButton" TargetType="RepeatButton"><Setter Property="Focusable" Value="False"/><Setter Property="Template"><Setter.Value><ControlTemplate TargetType="RepeatButton"><Border Background="Transparent"/></ControlTemplate></Setter.Value></Setter></Style>
-    <!-- Only the indicator changes width; settings reserve a separate gutter. -->
+    <!-- Settings use the existing canvas inset for the scrollbar, without narrowing cards. -->
     <Style x:Key="ScrollThumb" TargetType="Thumb">
         <!-- Track owns proportional height; MinHeight here clips a short rounded thumb. -->
         <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="Thumb">
@@ -246,9 +247,9 @@
     <Style TargetType="ScrollViewer"><Setter Property="PanningMode" Value="VerticalOnly"/><Setter Property="Template"><Setter.Value><ControlTemplate TargetType="ScrollViewer"><Grid><ScrollContentPresenter x:Name="PART_ScrollContentPresenter" CanContentScroll="{TemplateBinding CanContentScroll}" Content="{TemplateBinding Content}" ContentTemplate="{TemplateBinding ContentTemplate}" Margin="{TemplateBinding Padding}"/><ScrollBar x:Name="PART_VerticalScrollBar" Style="{StaticResource FluentScrollBar}" Panel.ZIndex="1" HorizontalAlignment="Right" Width="{StaticResource Size.Scrollbar}" Orientation="Vertical" Maximum="{TemplateBinding ScrollableHeight}" ViewportSize="{TemplateBinding ViewportHeight}" Value="{Binding VerticalOffset, RelativeSource={RelativeSource TemplatedParent}, Mode=OneWay}" Visibility="{TemplateBinding ComputedVerticalScrollBarVisibility}"/></Grid></ControlTemplate></Setter.Value></Setter></Style>
     <Style x:Key="SettingsScrollViewer" TargetType="ScrollViewer" BasedOn="{StaticResource {x:Type ScrollViewer}}">
         <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="ScrollViewer"><Grid ClipToBounds="True">
-            <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="20"/></Grid.ColumnDefinitions>
+            <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="24"/></Grid.ColumnDefinitions>
             <ScrollContentPresenter x:Name="PART_ScrollContentPresenter" Grid.Column="0" CanContentScroll="{TemplateBinding CanContentScroll}" Content="{TemplateBinding Content}" ContentTemplate="{TemplateBinding ContentTemplate}" Margin="{TemplateBinding Padding}"/>
-            <ScrollBar x:Name="PART_VerticalScrollBar" Grid.Column="1" Style="{StaticResource FluentScrollBar}" HorizontalAlignment="Right" Orientation="Vertical" Maximum="{TemplateBinding ScrollableHeight}" ViewportSize="{TemplateBinding ViewportHeight}" Value="{Binding VerticalOffset, RelativeSource={RelativeSource TemplatedParent}, Mode=OneWay}" Visibility="{TemplateBinding ComputedVerticalScrollBarVisibility}"/>
+            <ScrollBar x:Name="PART_VerticalScrollBar" Grid.Column="1" Style="{StaticResource FluentScrollBar}" HorizontalAlignment="Center" Orientation="Vertical" Maximum="{TemplateBinding ScrollableHeight}" ViewportSize="{TemplateBinding ViewportHeight}" Value="{Binding VerticalOffset, RelativeSource={RelativeSource TemplatedParent}, Mode=OneWay}" Visibility="{TemplateBinding ComputedVerticalScrollBarVisibility}"/>
         </Grid></ControlTemplate></Setter.Value></Setter>
     </Style>
     <Style x:Key="ScriptPreviewAction" TargetType="Button">

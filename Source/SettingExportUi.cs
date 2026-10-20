@@ -63,7 +63,8 @@ namespace JustEnoughTools
             for (int index = 0; index < 3; index++)
             {
                 int choice = index;
-                var button = new Button { Height = 64, Margin = new Thickness(4), ToolTip = Names[index], Padding = new Thickness(4) };
+                var button = new Button { Height = 64, Margin = new Thickness(4), Padding = new Thickness(4) };
+                if (index < 2) button.ToolTip = Names[index];
                 System.Windows.Automation.AutomationProperties.SetName(button, Names[index]);
                 if (SelectedIndex == index) button.Background = (Brush)owner.FindResource("Brush.SurfaceHover");
                 if (index < 2 || Selection.IsCustom)

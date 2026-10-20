@@ -53,7 +53,7 @@
                         </Grid>
                         <StackPanel Grid.Row="0" Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
                             <Button x:Name="ConfigureSecurityButton" Content="Отключить" MinWidth="{StaticResource Size.ActionButton}"
-                                    Margin="0,0,8,0" ToolTipService.ShowOnDisabled="True" ToolTipService.ShowDuration="60000"
+                                    Margin="0,0,8,0"
                                     AutomationProperties.Name="Применить доступные настройки защиты Windows"/>
                             <Button x:Name="SaveButton" Content="Сохранить" Margin="0,0,8,0"
                                     ToolTip="Сохранить автономный EXE для выполнения настройки"/>
@@ -65,7 +65,7 @@
                         </StackPanel>
                         <CheckBox x:Name="AddToStartMenu" Grid.Row="1" Grid.Column="0" Content="Добавить в меню пуск"
                                   IsChecked="True" MinHeight="32" Margin="0,8,16,0"
-                                  ToolTip="Создать ярлык сохранённого EXE в меню «Пуск» текущего пользователя"/>
+                                  ToolTip="Создать ярлык .lnk в папке меню «Пуск» текущего пользователя"/>
                         <TextBlock x:Name="ProtectionDescription" Grid.Row="1" Grid.Column="1" Style="{StaticResource Caption}"
                                    Margin="0,8,0,0" HorizontalAlignment="Right" VerticalAlignment="Center"
                                    Text="Требуются права администратора"/>
@@ -80,7 +80,6 @@
                     </Grid>
                 </Border>
                 <Border x:Name="TaskbarCard" Margin="0,8,0,0" Background="{DynamicResource Brush.Surface}"
-                        ToolTip="Режим 1: Главная панель задач и панель задач, в которой открыто окно&#x0A;Режим 2: Панель задач, в которой открыто окно"
                         BorderBrush="{DynamicResource Brush.Border}" BorderThickness="{StaticResource Border.Control}"
                         CornerRadius="{StaticResource Radius.Panel}" Padding="{StaticResource Pad.Panel}">
                     <Grid>
@@ -91,13 +90,14 @@
                             <Path x:Name="TaskbarSettingIcon" Width="20" Height="20" Margin="{StaticResource Gap.CategoryIcon}" Stretch="Uniform"
                                   Stroke="{DynamicResource Brush.Text}" StrokeThickness="1.4" StrokeLineJoin="Round" StrokeStartLineCap="Round" StrokeEndLineCap="Round"
                                   Data="M3 5 L21 5 L21 18 L3 18 Z M3 14 L21 14 M12 18 L12 21 M8 21 L16 21 M9 16 L10 16 M12 16 L13 16 M15 16 L16 16"/>
-                            <TextBlock x:Name="TaskbarTitle" Grid.Column="1" Text="Исправление панели задач" VerticalAlignment="Center"/>
+                            <TextBlock x:Name="TaskbarTitle" Grid.Column="1" Text="Исправление панели задач" VerticalAlignment="Center" HorizontalAlignment="Left"
+                                       ToolTip="Режим 1: Главная панель задач и панель задач, в которой открыто окно&#x0A;Режим 2: Панель задач, в которой открыто окно"/>
                         </Grid>
                         <StackPanel Grid.Row="0" Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
                             <CheckBox x:Name="TaskbarModeSwitch" Style="{StaticResource TaskbarModeSwitchStyle}" IsChecked="False" Margin="0,0,12,0"
-                                      ToolTip="Режим 1: Главная панель задач и панель задач, в которой открыто окно&#x0A;Режим 2: Панель задач, в которой открыто окно" AutomationProperties.Name="Режим исправления панели задач"/>
+                                      AutomationProperties.Name="Режим исправления панели задач"/>
                             <Button x:Name="ApplyTaskbarButton" Content="Применить" MinWidth="{StaticResource Size.ActionButton}"
-                                    Margin="0,0,8,0" ToolTipService.ShowOnDisabled="True" ToolTipService.ShowDuration="60000"
+                                    Margin="0,0,8,0"
                                     AutomationProperties.Name="Исправить панель задач"/>
                             <Button x:Name="TaskbarSaveButton" Content="Сохранить" Margin="0,0,8,0"
                                     ToolTip="Сохранить автономный EXE для выполнения настройки"/>
@@ -109,7 +109,7 @@
                         </StackPanel>
                         <CheckBox x:Name="TaskbarAddToStartMenu" Grid.Row="1" Grid.Column="0" Content="Добавить в меню пуск"
                                   IsChecked="True" MinHeight="32" Margin="0,8,16,0"
-                                  ToolTip="Создать ярлык сохранённого EXE в меню «Пуск» текущего пользователя"/>
+                                  ToolTip="Создать ярлык .lnk в папке меню «Пуск» текущего пользователя"/>
                         <Popup x:Name="TaskbarIconPopup" PlacementTarget="{Binding ElementName=TaskbarIconButton}" Placement="Top"
                                StaysOpen="False" AllowsTransparency="True" PopupAnimation="Fade" VerticalOffset="-8">
                             <Border Background="{DynamicResource Brush.Popup}" BorderBrush="{DynamicResource Brush.Border}"

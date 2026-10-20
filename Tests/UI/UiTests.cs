@@ -57,8 +57,6 @@ namespace JustEnoughTools.Tests
                 "The card must identify the setting and required administrator rights.");
             Require(Equals(configure.Content, "Отключить") && !configure.IsEnabled,
                 "The configuration button must await the one-time startup inspection.");
-            Require(ToolTipService.GetShowOnDisabled(configure),
-                "Reasons for unavailable actions must remain readable when no actionable settings are enabled.");
             Require(Equals(save.Content, "Сохранить") && save.IsEnabled && icon.IsEnabled && Double.IsNaN(save.Width),
                 "Export and icon selection must be available; Save must size to its content.");
             Require(Find<CheckBox>(window, "AddToStartMenu").IsChecked == true,

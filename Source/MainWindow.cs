@@ -2,7 +2,6 @@ using System;
 using System.ComponentModel;
 using System.IO;
 using System.Reflection;
-using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
@@ -131,9 +130,8 @@ namespace JustEnoughTools
                 if (snapshot == null) throw new InvalidOperationException("Не удалось прочитать состояние защиты Windows.");
                 securityNeedsChanges = snapshot.HasChanges || snapshot.HasUnknown;
                 protectionDescription.Visibility = snapshot.RequiresElevation ? Visibility.Visible : Visibility.Collapsed;
-                configureButton.ToolTip = CreateSecurityToolTip(snapshot);
             }
-            catch (Exception error)
+            catch (Exception)
             {
                 if (disposed || closing) return;
                 // Unknown is not proof that the switches are off. A user may
@@ -141,7 +139,6 @@ namespace JustEnoughTools
                 // startup dialog or a background polling process.
                 securityNeedsChanges = true;
                 protectionDescription.Visibility = Visibility.Collapsed;
-                configureButton.ToolTip = ReadOnlyToolTip("Состояние не подтверждено: " + error.Message);
             }
             finally
             {
@@ -149,48 +146,6 @@ namespace JustEnoughTools
                 checkingSecurity = false;
                 if (!disposed && !closing) RefreshButtons();
             }
-        }
-
-        static ToolTip CreateSecurityToolTip(SecuritySnapshot snapshot)
-        {
-            var text = new StringBuilder(snapshot.HasChanges
-                ? "Доступные параметры требуют изменения."
-                : snapshot.HasUnknown
-                    ? "Состояние части доступных параметров не подтверждено."
-                    : "Доступных изменений сейчас нет. Повторная проверка — при следующем запуске приложения.");
-            bool headingAdded = false;
-            if (snapshot.Actions != null)
-                foreach (ActionState action in snapshot.Actions)
-                {
-                    if (action == null || action.State != ActionStateKind.Unavailable) continue;
-                    if (!headingAdded)
-                    {
-                        text.AppendLine().AppendLine().AppendLine("Недоступные действия:");
-                        headingAdded = true;
-                    }
-                    text.Append("• ").Append(action.Title ?? action.Id ?? "Действие").Append(": ")
-                        .AppendLine(String.IsNullOrWhiteSpace(action.Reason)
-                            ? "Программный способ для этой системы не подтверждён."
-                            : action.Reason);
-                }
-            return ReadOnlyToolTip(text.ToString().TrimEnd());
-        }
-
-        static ToolTip ReadOnlyToolTip(string text)
-        {
-            return new ToolTip
-            {
-                MaxWidth = 560,
-                Content = new ScrollViewer
-                {
-                    MaxHeight = Math.Max(120, Math.Min(480, SystemParameters.WorkArea.Height - 80)),
-                    MaxWidth = 520,
-                    VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-                    HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
-                    Padding = new Thickness(0, 0, 20, 0),
-                    Content = new TextBlock { Text = text, TextWrapping = TextWrapping.Wrap }
-                }
-            };
         }
 
         async void StartUpdateCheck(object sender, RoutedEventArgs args)

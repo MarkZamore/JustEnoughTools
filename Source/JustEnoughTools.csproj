@@ -1,0 +1,55 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net48</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <EnableDefaultPageItems>false</EnableDefaultPageItems>
+    <EnableDefaultApplicationDefinition>false</EnableDefaultApplicationDefinition>
+    <AssemblyName>JustEnoughTools</AssemblyName>
+    <RootNamespace>JustEnoughTools</RootNamespace>
+    <StartupObject>JustEnoughTools.Program</StartupObject>
+    <PlatformTarget>x64</PlatformTarget>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <ReleaseNumber Condition="'$(ReleaseNumber)' == ''">1</ReleaseNumber>
+    <Version>1.0.$(ReleaseNumber)</Version>
+    <FileVersion>1.0.$(ReleaseNumber).0</FileVersion>
+    <InformationalVersion>$(ReleaseNumber)</InformationalVersion>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets/JustEnoughTools.ico</ApplicationIcon>
+    <GenerateBindingRedirectsOutputType>false</GenerateBindingRedirectsOutputType>
+    <AutoGenerateBindingRedirects>false</AutoGenerateBindingRedirects>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+    <Deterministic>true</Deterministic>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+    <DefaultItemExcludes>$(DefaultItemExcludes);Build/**;Patch/**;Tools/**;bin/**;obj/**</DefaultItemExcludes>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="System.Runtime.Serialization" />
+    <Reference Include="System.Net.Http" />
+    <Reference Include="System.Management" />
+    <Reference Include="System.Web.Extensions" />
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies.net48" Version="1.0.3" PrivateAssets="all" />
+    <PackageReference Include="BsDiff" Version="1.1.0" />
+    <EmbeddedResource Include="Theme.xaml" LogicalName="Theme" />
+    <EmbeddedResource Include="Window.xaml" LogicalName="Window" />
+    <EmbeddedResource Include="Assets/JustEnoughTools.ico" LogicalName="AppIcon" />
+    <EmbeddedResource Include="Changelog.md" LogicalName="Changelog" />
+    <EmbeddedResource Include="../THIRD-PARTY-NOTICES.txt" LogicalName="ThirdPartyNotices" />
+    <AssemblyMetadata Include="ReleaseNumber" Value="$(ReleaseNumber)" />
+    <AssemblyMetadata Include="SourceFingerprint" Value="$(SourceFingerprint)" Condition="'$(SourceFingerprint)' != ''" />
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
+      <_Parameter1>JustEnoughTools.Tests</_Parameter1>
+    </AssemblyAttribute>
+  </ItemGroup>
+  <Target Name="EmbedManagedDependencies" AfterTargets="ResolveReferences" BeforeTargets="AssignTargetPaths">
+    <ItemGroup>
+      <EmbeddedResource Include="@(ReferenceCopyLocalPaths)" Condition="'%(ReferenceCopyLocalPaths.Extension)' == '.dll'">
+        <LogicalName>Dependencies.%(Filename)%(Extension)</LogicalName>
+      </EmbeddedResource>
+    </ItemGroup>
+  </Target>
+</Project>

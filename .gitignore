@@ -1,0 +1,45 @@
+# The distributable in the root is intentionally tracked.
+*.exe
+!/JustEnoughTools.exe
+*.msi
+*.zip
+*.7z
+*.iso
+*.vhd
+*.vhdx
+*.vdi
+*.vmdk
+*.qcow2
+JustEnoughTools.update
+
+# Build and private verification output.
+**/bin/
+**/obj/
+**/Build/
+**/TestResults/
+/artifacts/
+/Tests/Artifacts/
+/scratch/
+*.pml
+*.pmc
+*.etl
+*.dmp
+*.log
+*.tmp
+
+# Editor state and credentials.
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+.env
+.env.*
+!.env.example
+*.pfx
+*.key
+*.pem
+*.token
+*.credential
+__pycache__/
+*.pyc

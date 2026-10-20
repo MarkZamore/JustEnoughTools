@@ -1,0 +1,42 @@
+JustEnoughTools includes the following managed libraries as embedded resources:
+
+BsDiff 1.1.0
+Copyright 2010-2024 Logos Bible Software
+https://github.com/LogosBible/bsdiff.net
+
+SharpZipLib 1.4.2
+Copyright 2000-2022 SharpZipLib Contributors
+https://github.com/icsharpcode/SharpZipLib
+
+System.Memory, System.Buffers, System.Threading.Tasks.Extensions,
+System.Runtime.CompilerServices.Unsafe and System.Numerics.Vectors
+Copyright .NET Foundation and Contributors
+https://github.com/dotnet/runtime
+
+These libraries are distributed under the MIT License:
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
+IN THE SOFTWARE.
+
+Visual resources are adapted from the user's Autonomy&Performance project.
+Updater behavior and release tooling are adapted from the user's
+LANMinecraft project (Copyright LANMinecraft contributors, MIT License).
+
+The application icon is original artwork generated from vector drawing code
+in Source/Tools/GenerateIcon.cs. Windows fonts are used from the operating
+system and are not redistributed.

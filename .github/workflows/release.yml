@@ -1,0 +1,107 @@
+name: Release JustEnoughTools
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: justenoughtools-latest-release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    if: github.ref == 'refs/heads/main'
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Find .NET SDK
+        id: dotnet
+        shell: pwsh
+        run: |
+          $answer = & dotnet --version 2>$null
+          $usable = $LASTEXITCODE -eq 0 -and $answer -match '^10\.0\.'
+          "preinstalled=$($usable.ToString().ToLowerInvariant())" | Out-File $env:GITHUB_OUTPUT -Append -Encoding utf8
+          $global:LASTEXITCODE = 0
+
+      - name: Setup .NET SDK
+        if: steps.dotnet.outputs.preinstalled != 'true'
+        uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: global.json
+
+      - name: Verify tracked executable and prepare tools
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $number = [int](& git rev-list --count HEAD)
+          if ($LASTEXITCODE -ne 0 -or $number -lt 1) { throw 'Cannot determine the commit count.' }
+          & .github/scripts/Verify-TrackedExecutable.ps1 -ReleaseNumber $number
+          "RELEASE_NUMBER=$number" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          $bases = Join-Path $env:RUNNER_TEMP 'jet-delta-bases.json'
+          $previous = Join-Path $env:RUNNER_TEMP 'jet-previous-release.json'
+          $capture = Start-Job -Name 'capture releases' -ScriptBlock {
+            param($workspace, $number, $sha, $bases, $previous, $work, $repository)
+            $ErrorActionPreference = 'Stop'
+            $result = & "$workspace/.github/scripts/Capture-PreviousRelease.ps1" -CommitNumber $number `
+              -CommitSha $sha -ExecutablePath "$workspace/JustEnoughTools.exe" -BasesFile $bases `
+              -WorkDirectory $work -Repository $repository
+            $result | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $previous -Encoding UTF8
+          } -ArgumentList $env:GITHUB_WORKSPACE, $number, '${{ github.sha }}', $bases, $previous,
+                          $env:RUNNER_TEMP, '${{ github.repository }}'
+          try {
+            & dotnet build Source/Patch/DeltaPatchTool.csproj -c Release
+            if ($LASTEXITCODE -ne 0) { throw 'Delta tool build or dependency audit failed.' }
+            & Source/Build.ps1 -ReleaseNumber $number -OutputDirectory (Join-Path $env:RUNNER_TEMP 'jet-source-build')
+            if (-not $?) { throw 'Source build failed.' }
+            Wait-Job -Job $capture | Out-Null
+            Receive-Job -Job $capture -ErrorAction Continue
+            if ($capture.State -ne 'Completed') { throw "Release capture failed: $($capture.ChildJobs[0].JobStateInfo.Reason.Message)" }
+          }
+          finally {
+            if ($capture.State -eq 'Running') { Stop-Job -Job $capture }
+            Remove-Job -Job $capture -Force
+          }
+          "DELTA_BASES_FILE=$bases" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "PREVIOUS_INFO_FILE=$previous" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Run tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & Tests/Test.ps1 -ExecutablePath (Join-Path $env:GITHUB_WORKSPACE 'JustEnoughTools.exe')
+          if (-not $?) { throw 'Tests failed.' }
+          & .github/tests/ReleaseTests.ps1
+          & .github/scripts/Verify-TrackedExecutable.ps1 -ReleaseNumber ([int]$env:RELEASE_NUMBER)
+
+      - name: Build verified release assets
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          & .github/scripts/Build-ReleaseAssets.ps1 -ReleaseNumber ([int]$env:RELEASE_NUMBER) `
+            -CommitSha '${{ github.sha }}' -ExecutablePath "$env:GITHUB_WORKSPACE/JustEnoughTools.exe" `
+            -BasesFile $env:DELTA_BASES_FILE -PreviousInfoFile $env:PREVIOUS_INFO_FILE `
+            -ArtifactDirectory "$env:GITHUB_WORKSPACE/artifacts" `
+            -DeltaTool "$env:GITHUB_WORKSPACE/Source/Patch/bin/Release/net10.0/DeltaPatchTool.dll" `
+            -WorkDirectory $env:RUNNER_TEMP -Repository '${{ github.repository }}'
+
+      - name: Publish latest
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          & .github/scripts/Publish-Release.ps1 -ReleaseNumber ([int]$env:RELEASE_NUMBER) `
+            -CommitSha '${{ github.sha }}' -ExecutablePath "$env:GITHUB_WORKSPACE/JustEnoughTools.exe" `
+            -PreviousInfoFile $env:PREVIOUS_INFO_FILE -ArtifactDirectory "$env:GITHUB_WORKSPACE/artifacts" `
+            -WorkDirectory $env:RUNNER_TEMP -Repository '${{ github.repository }}'

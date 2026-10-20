@@ -14,9 +14,6 @@
   </PropertyGroup>
   <ItemGroup>
     <Reference Include="System.Net.Http" />
-    <Reference Include="System.Management" />
-    <Reference Include="System.Web.Extensions" />
-    <Reference Include="System.Runtime.Serialization" />
     <ProjectReference Include="../Source/JustEnoughTools.csproj" />
     <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies.net48" Version="1.0.3" PrivateAssets="all" />
   </ItemGroup>

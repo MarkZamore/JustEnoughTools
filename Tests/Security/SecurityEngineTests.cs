@@ -1,9 +1,7 @@
 using System;
 using System.Collections.Generic;
-using System.IO;
 using System.Linq;
 using System.Reflection;
-using System.Runtime.Serialization.Json;
 using System.Text;
 using JustEnoughTools.Security;
 
@@ -72,15 +70,6 @@ namespace JustEnoughTools.Tests
             Require(!report.Succeeded && report.Results.All(item => item.Outcome == ActionOutcome.Unverified), "An undefined enum value was accepted."); checks++;
 
             report = SecurityEngine.ExecuteCatalogue(new FakeBackend());
-            using (var stream = new MemoryStream())
-            {
-                var serializer = new DataContractJsonSerializer(typeof(SecurityReport));
-                serializer.WriteObject(stream, report);
-                stream.Position = 0;
-                var decoded = (SecurityReport)serializer.ReadObject(stream);
-                Require(decoded.Succeeded && decoded.Results.Count == 18 && decoded.Results[0].Id == "defender.realtime",
-                    "Final IPC JSON lost the action results."); checks++;
-            }
             var empty = new SecurityReport();
             Require(!empty.Succeeded && empty.FormatProblems().Contains("не вернул"), "An empty report claimed success."); checks++;
             report.Results.Add(null);

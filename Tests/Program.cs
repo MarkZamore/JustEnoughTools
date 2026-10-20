@@ -58,18 +58,9 @@ namespace JustEnoughTools.Tests
             Require(Int32.TryParse(version.FileVersion, out releaseNumber) && releaseNumber > 0 &&
                 version.FileVersion == releaseNumber.ToString(System.Globalization.CultureInfo.InvariantCulture) &&
                 version.ProductVersion == version.FileVersion, "File and product versions must contain only the release number.");
-            using (var process = Process.Start(new ProcessStartInfo(TestContext.ExecutablePath, "--self-test")
-            {
-                UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true,
-                WorkingDirectory = Path.GetDirectoryName(TestContext.ExecutablePath)
-            }))
-            {
-                if (!process.WaitForExit(30000)) { process.Kill(); throw new InvalidOperationException("Standalone embedded-dependency probe timed out."); }
-                string output = process.StandardOutput.ReadToEnd();
-                string error = process.StandardError.ReadToEnd();
-                Require(process.ExitCode == 0 && output.Contains("Embedded dependencies OK"), "Standalone dependency probe failed: " + error + output);
-            }
-            return 10;
+            // PortabilityTests runs the same executable probe from an isolated
+            // single-file directory with runtime/probing paths removed.
+            return 9;
         }
         private static void Require(bool condition, string message) { if (!condition) throw new InvalidOperationException(message); }
     }

@@ -60,12 +60,12 @@ Tamper Protection, Smart App Control и SmartScreen приложений Store �
 Для сборки нужны Windows, .NET SDK 10.0.400 или совместимый 10.0 SDK и NuGet при первом восстановлении. Номер выпуска равен числу коммитов в `main`; перед следующим коммитом используется текущее число плюс один. Начиная с выпуска 5 видимые в Windows версия файла (FileVersion) и версия продукта (ProductVersion) показывают одно число `N`, как в Autonomy&Performance. Внутренняя AssemblyVersion сохраняет технический формат `1.0.N.0`.
 
 ```powershell
-.\Source\Build.ps1 -ReleaseNumber 9
+.\Source\Build.ps1 -ReleaseNumber 10
 .\Tests\Test.ps1 -ExecutablePath .\JustEnoughTools.exe
 .\.github\tests\ReleaseTests.ps1
 ```
 
-`--self-test` проверяет встроенные зависимости без изменения защиты. Обычные автоматические тесты и CI не запускают системные setters и обычный entrypoint экспортированного EXE. Все реальные изменения защиты проверяются только в отдельной VM; основная Windows не изменяется. Подтверждённые сценарии и границы наблюдения описаны в [Tests/PORTABILITY.md](Tests/PORTABILITY.md).
+`--self-test` проверяет встроенные зависимости без изменения защиты. Обычные автоматические тесты и CI не запускают системные setters и обычный entrypoint экспортированного EXE. Все реальные изменения защиты проверяются только в отдельной VM; основная Windows не изменяется. Текущий набор описан в [Tests/README.md](Tests/README.md), контракт — в [Tests/PORTABILITY.md](Tests/PORTABILITY.md). Исторические VM-прогоны сохранены в [архиве](docs/verification-history.md).
 
 Сборка 5 завершилась без ошибок и предупреждений; локально прошли 385 проверок приложения, 26 проверок выпуска и 9 проверок происхождения исходников. Проверены видимые строки FileVersion=`5` и ProductVersion=`5`, техническая AssemblyVersion=`1.0.5.0`. В выпуске изменены метаданные версии; защитная логика не менялась и повторным изменениям в VM для нового SHA-256 не подвергалась.
 

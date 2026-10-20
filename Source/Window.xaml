@@ -11,9 +11,8 @@
         <ScrollViewer x:Name="SettingsScroll" Grid.Row="0" Style="{StaticResource SettingsScrollViewer}" Margin="{StaticResource Gap.SettingsScroll}"
                       VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
                       KeyboardNavigation.DirectionalNavigation="Continue" AutomationProperties.Name="Инструменты">
-            <Grid MinHeight="{Binding ViewportHeight, ElementName=SettingsScroll}">
-                <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="*"/></Grid.RowDefinitions>
-                <Expander x:Name="WalkieTalkieSection" Grid.Row="0" Margin="{StaticResource Gap.Row}" AutomationProperties.Name="WalkieTalkie">
+            <StackPanel>
+                <Expander x:Name="WalkieTalkieSection" Margin="{StaticResource Gap.Row}" AutomationProperties.Name="WalkieTalkie">
                     <Expander.Header>
                         <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
                             <Grid Width="20" Height="20" Margin="{StaticResource Gap.CategoryIcon}" VerticalAlignment="Center">
@@ -26,7 +25,7 @@
                     </Expander.Header>
                     <Grid/>
                 </Expander>
-                <Expander x:Name="ClickerSection" Grid.Row="1" Margin="{StaticResource Gap.Row}" AutomationProperties.Name="Clicker">
+                <Expander x:Name="ClickerSection" Margin="{StaticResource Gap.Row}" AutomationProperties.Name="Clicker">
                     <Expander.Header>
                         <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
                             <Grid Width="20" Height="20" Margin="{StaticResource Gap.CategoryIcon}" VerticalAlignment="Center">
@@ -39,7 +38,7 @@
                     </Expander.Header>
                     <Grid/>
                 </Expander>
-                <Border x:Name="ProtectionCard" Grid.Row="2" Background="{DynamicResource Brush.Surface}"
+                <Border x:Name="ProtectionCard" Background="{DynamicResource Brush.Surface}"
                         BorderBrush="{DynamicResource Brush.Border}" BorderThickness="{StaticResource Border.Control}"
                         CornerRadius="{StaticResource Radius.Panel}" Padding="{StaticResource Pad.Panel}">
                     <Grid>
@@ -80,7 +79,7 @@
                         </Popup>
                     </Grid>
                 </Border>
-                <Border x:Name="TaskbarCard" Grid.Row="3" Margin="0,8,0,0" Background="{DynamicResource Brush.Surface}"
+                <Border x:Name="TaskbarCard" Margin="0,8,0,0" Background="{DynamicResource Brush.Surface}"
                         BorderBrush="{DynamicResource Brush.Border}" BorderThickness="{StaticResource Border.Control}"
                         CornerRadius="{StaticResource Radius.Panel}" Padding="{StaticResource Pad.Panel}">
                     <Grid>
@@ -121,7 +120,7 @@
                         </Popup>
                     </Grid>
                 </Border>
-            </Grid>
+            </StackPanel>
         </ScrollViewer>
         <Grid x:Name="UpdateArea" Grid.Row="1" Margin="{StaticResource Gap.Footer}">
             <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>

@@ -38,6 +38,8 @@
     <EmbeddedResource Include="Theme.xaml" LogicalName="Theme" />
     <EmbeddedResource Include="Window.xaml" LogicalName="Window" />
     <EmbeddedResource Include="Assets/JustEnoughTools.ico" LogicalName="AppIcon" />
+    <EmbeddedResource Include="Assets/Security.ico" LogicalName="SecurityIcon" />
+    <EmbeddedResource Include="Assets/Taskbar.ico" LogicalName="TaskbarIcon" />
     <EmbeddedResource Include="$(MSBuildThisFileDirectory)Build/Runner/bin/$(Configuration)/net48/JustEnoughTools.Runner.exe" LogicalName="RunnerTemplate" />
     <EmbeddedResource Include="Changelog.md" LogicalName="Changelog" />
     <EmbeddedResource Include="../THIRD-PARTY-NOTICES.txt" LogicalName="ThirdPartyNotices" />

@@ -23,7 +23,7 @@ namespace JustEnoughTools.Tests
             Directory.CreateDirectory(root);
             try
             {
-                byte[] template = EmbeddedAssets.Read("RunnerTemplate"), originalIcon = EmbeddedAssets.Read("AppIcon");
+                byte[] template = EmbeddedAssets.Read("RunnerTemplate"), originalIcon = EmbeddedAssets.Read("SecurityIcon");
                 byte[] image = PortableResources.CreateExecutable(template, originalIcon);
                 PortableResources.AssertIcon(image, originalIcon);
                 Require(PortableResources.PinnedIconIndex(image) < -1, "The export must contain a content-specific icon alias.");

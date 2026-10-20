@@ -64,8 +64,30 @@ namespace JustEnoughTools.Tests
             Require(Find<CheckBox>(window, "AddToStartMenu").IsChecked == true,
                 "The Start menu option must be enabled by default.");
             Require(!Find<Popup>(window, "IconPopup").IsOpen &&
-                Find<StackPanel>(window, "IconChoices").Children.Count == 2,
-                "The closed icon picker must offer the default icon and a custom ICO.");
+                Find<UniformGrid>(window, "IconChoices").Children.Count == 3 &&
+                Find<UniformGrid>(window, "TaskbarIconChoices").Children.Count == 3,
+                "Both icon pickers must offer two built-in tiles and a custom ICO.");
+            var taskbarMode = Find<CheckBox>(window, "TaskbarModeSwitch");
+            Require(!taskbarMode.IsThreeState && taskbarMode.IsChecked == false &&
+                Equals(Find<Button>(window, "ApplyTaskbarButton").Content, "Применить") &&
+                Find<CheckBox>(window, "TaskbarAddToStartMenu").IsChecked == true,
+                "Taskbar repair must offer only two modes and the same export controls.");
+            foreach (bool mode in new[] { true, false })
+            {
+                taskbarMode.IsChecked = mode;
+                Require(((TextBlock)taskbarMode.Template.FindName("SwitchState", taskbarMode)).Text == (mode ? "Режим 2" : "Режим 1"),
+                    "Taskbar modes must never show an unchanged/off state.");
+            }
+            var securityPreview = Find<Image>(window, "CurrentIcon");
+            var taskbarPreview = Find<Image>(window, "TaskbarCurrentIcon");
+            ImageSource taskbarBefore = taskbarPreview.Source;
+            ((Button)Find<UniformGrid>(window, "IconChoices").Children[1]).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            Require(ReferenceEquals(taskbarBefore, taskbarPreview.Source), "Choosing a protection export icon must not change the taskbar selection.");
+            ((Button)Find<UniformGrid>(window, "IconChoices").Children[0]).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            ImageSource securityBefore = securityPreview.Source;
+            ((Button)Find<UniformGrid>(window, "TaskbarIconChoices").Children[0]).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            Require(ReferenceEquals(securityBefore, securityPreview.Source), "Each setting must retain its own icon selection.");
+            ((Button)Find<UniformGrid>(window, "TaskbarIconChoices").Children[1]).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
             Require(Equals(update.Content, "Обновить") && !update.IsEnabled, "The update button must start disabled.");
             Require(update.Width == 96, "The update button must be 96 DIP wide.");
             Require(Find<ProgressBar>(window, "UpdateProgressBar").MinHeight == 36, "The update bar must be at least 36 DIP high.");
@@ -252,8 +274,13 @@ namespace JustEnoughTools.Tests
                 card.BorderThickness.Left - card.Padding.Left) <= 0.75,
                 "The Start menu checkbox must align with the card's inner left edge.");
             Require(Math.Abs(Bounds(startMenu, settings).Left -
-                Bounds(Find<TextBlock>(window, "ProtectionIcon"), settings).Left) <= 0.75,
+                Bounds(Find<FrameworkElement>(window, "ProtectionIcon"), settings).Left) <= 0.75,
                 "The Start menu checkbox must begin directly under the setting icon, without a title-text indent.");
+            foreach (string name in new[] { "TaskbarModeSwitch", "ApplyTaskbarButton", "TaskbarSaveButton", "TaskbarIconButton", "TaskbarAddToStartMenu" })
+                AssertInside(Find<FrameworkElement>(window, name), settings, "Taskbar controls must fit the minimum viewport: " + name);
+            Require(Math.Abs(Bounds(Find<CheckBox>(window, "TaskbarAddToStartMenu"), settings).Left -
+                Bounds(Find<FrameworkElement>(window, "TaskbarSettingIcon"), settings).Left) <= 0.75,
+                "Taskbar export checkbox must begin under its icon.");
             TextBlock administratorNote = Find<TextBlock>(window, "ProtectionDescription");
             if (administratorNote.Visibility == Visibility.Visible)
             {

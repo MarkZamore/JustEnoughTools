@@ -159,9 +159,10 @@ internal static class PortableResources
         // Parse the result before anything is written to disk, including its unchanged CLR directory.
         Parse(result);return result;
     }
-    internal static byte[] CreateExecutable(byte[] template,byte[] icon)
+    internal static byte[] CreateExecutable(byte[] template,byte[] icon,JustEnoughTools.Actions.FixedAction action = JustEnoughTools.Actions.FixedAction.Security)
     {
         Image image=Parse(template); IconFile.Validate(icon);
+        Set(image.Root,10,new Key(JustEnoughTools.Actions.FixedActionResource.ResourceId),0,JustEnoughTools.Actions.FixedActionResource.Encode(action));
         image.Root.Children.Remove(new Key(3));image.Root.Children.Remove(new Key(14));
         Require(icon!=null&&icon.Length>=22&&U16(icon,0)==0&&U16(icon,2)==1);int count=U16(icon,4);Require(count>0&&count<=256);Range(icon,6,count*16);
         using(MemoryStream group=new MemoryStream())using(BinaryWriter writer=new BinaryWriter(group)){
@@ -199,6 +200,12 @@ internal static class PortableResources
         }
     }
     internal static void Validate(byte[] executable) { Parse(executable); }
+    internal static JustEnoughTools.Actions.FixedAction ReadAction(byte[] executable)
+    {
+        Node entry=Child(Child(Child(Parse(executable).Root,new Key(10),false),new Key(JustEnoughTools.Actions.FixedActionResource.ResourceId),false),new Key(0),false);
+        Require(entry!=null&&entry.Children==null);
+        return JustEnoughTools.Actions.FixedActionResource.Decode(entry.Data);
+    }
     internal static bool HaveSameIcon(byte[] first,byte[] second)
     {
         Image oldImage=Parse(first),newImage=Parse(second);

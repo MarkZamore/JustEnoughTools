@@ -18,6 +18,10 @@ $assets = Join-Path $PSScriptRoot 'Assets'
 [void][IO.Directory]::CreateDirectory($assets)
 & $generator (Join-Path $assets 'JustEnoughTools.ico')
 if ($LASTEXITCODE -ne 0) { throw 'Не удалось создать иконку.' }
+& $generator (Join-Path $assets 'Security.ico') 'security'
+if ($LASTEXITCODE -ne 0) { throw 'Не удалось создать иконку защиты.' }
+& $generator (Join-Path $assets 'Taskbar.ico') 'taskbar'
+if ($LASTEXITCODE -ne 0) { throw 'Не удалось создать иконку панели задач.' }
 $project = Join-Path $PSScriptRoot 'JustEnoughTools.csproj'
 & dotnet restore $project "-p:ReleaseNumber=$ReleaseNumber" "-p:BaseOutputPath=$intermediate\bin\" "-p:BaseIntermediateOutputPath=$intermediate\obj\" --nologo
 if ($LASTEXITCODE -ne 0) { throw 'Не удалось восстановить зависимости JustEnoughTools.' }

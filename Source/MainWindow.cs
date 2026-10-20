@@ -16,6 +16,7 @@ using System.Windows.Media.Imaging;
 using JustEnoughTools.Updates;
 using JustEnoughTools.Security;
 using JustEnoughTools.Export;
+using JustEnoughTools.Actions;
 
 namespace JustEnoughTools
 {
@@ -24,16 +25,16 @@ namespace JustEnoughTools
         readonly Func<Task<SecurityReport>> configureSecurity;
         readonly Func<SecuritySnapshot> inspectSecurity;
         readonly UpdateService updates;
+        readonly string executablePath;
         readonly CancellationTokenSource lifetime = new CancellationTokenSource();
         readonly Button configureButton;
         readonly Button saveButton;
         readonly Button iconButton;
-        readonly Button defaultIconButton;
-        readonly Button customIconButton;
         readonly CheckBox addToStartMenu;
-        readonly Image currentIcon;
         readonly Popup iconPopup;
-        readonly IconSelection iconSelection = new IconSelection();
+        readonly SettingExportUi securityExport, taskbarExport;
+        readonly Button applyTaskbarButton;
+        readonly CheckBox taskbarSwitch;
         readonly Button updateButton;
         readonly TextBlock updateText;
         readonly TextBlock protectionDescription;
@@ -59,6 +60,7 @@ namespace JustEnoughTools
             Func<Task<SecurityReport>> configureSecurity = null,
             Func<SecuritySnapshot> inspectSecurity = null)
         {
+            this.executablePath = executablePath;
             this.configureSecurity = configureSecurity;
             this.inspectSecurity = inspectSecurity ?? SecurityEngine.Inspect;
             Assembly assembly = Assembly.GetExecutingAssembly();
@@ -76,13 +78,15 @@ namespace JustEnoughTools
             ControlMotion.AttachCategory((Expander)Window.FindName("WalkieTalkieSection"));
             ControlMotion.AttachCategory((Expander)Window.FindName("ClickerSection"));
             configureButton = (Button)Window.FindName("ConfigureSecurityButton");
-            saveButton = (Button)Window.FindName("SaveButton");
-            iconButton = (Button)Window.FindName("IconButton");
-            defaultIconButton = (Button)Window.FindName("DefaultIconButton");
-            customIconButton = (Button)Window.FindName("CustomIconButton");
-            addToStartMenu = (CheckBox)Window.FindName("AddToStartMenu");
-            currentIcon = (Image)Window.FindName("CurrentIcon");
-            iconPopup = (Popup)Window.FindName("IconPopup");
+            securityExport = new SettingExportUi(Window, "", "SecurityIcon", ShowProblem);
+            taskbarExport = new SettingExportUi(Window, "Taskbar", "TaskbarIcon", ShowProblem);
+            saveButton = securityExport.Save; iconButton = securityExport.Icon;
+            addToStartMenu = securityExport.StartMenu; iconPopup = securityExport.Popup;
+            applyTaskbarButton = (Button)Window.FindName("ApplyTaskbarButton");
+            taskbarSwitch = (CheckBox)Window.FindName("TaskbarModeSwitch");
+            ControlMotion.AttachTaskbarSwitch(taskbarSwitch);
+            applyTaskbarButton.Click += ApplyTaskbar;
+            taskbarExport.Save.Click += SaveExecutable;
             updateButton = (Button)Window.FindName("UpdateButton");
             updateText = (TextBlock)Window.FindName("UpdateProgressText");
             protectionDescription = (TextBlock)Window.FindName("ProtectionDescription");
@@ -91,13 +95,6 @@ namespace JustEnoughTools
             protectionDescription.Visibility = Visibility.Collapsed;
             configureButton.Click += ConfigureSecurity;
             saveButton.Click += SaveExecutable;
-            iconButton.Click += ToggleIconPicker;
-            defaultIconButton.Click += SelectDefaultIcon;
-            customIconButton.Click += SelectCustomIcon;
-            Window.PreviewKeyDown += IconPickerKeyDown;
-            ((StackPanel)Window.FindName("IconChoices")).PreviewKeyDown += IconPickerKeyDown;
-            ((Image)Window.FindName("DefaultIconPreview")).Source = Window.Icon;
-            RefreshIconPreview();
             updateButton.Click += UpdateAndRestart;
             updates = new UpdateService(executablePath, releaseNumber);
             updates.StatusChanged += OnUpdateStatus;
@@ -243,6 +240,11 @@ namespace JustEnoughTools
             saveButton.IsEnabled = available;
             iconButton.IsEnabled = available;
             addToStartMenu.IsEnabled = available;
+            applyTaskbarButton.IsEnabled = available;
+            taskbarSwitch.IsEnabled = available;
+            taskbarExport.Save.IsEnabled = available;
+            taskbarExport.Icon.IsEnabled = available;
+            taskbarExport.StartMenu.IsEnabled = available;
             updateButton.IsEnabled = updateReady && updates.HasPreparedUpdate && available;
         }
 
@@ -345,73 +347,48 @@ namespace JustEnoughTools
             return dialog;
         }
 
-        void RefreshIconPreview()
-        {
-            using (var stream = new MemoryStream(iconSelection.Read(), false))
-            {
-                var decoder = BitmapDecoder.Create(stream, BitmapCreateOptions.PreservePixelFormat, BitmapCacheOption.OnLoad);
-                BitmapFrame selected = decoder.Frames[0];
-                foreach (BitmapFrame frame in decoder.Frames)
-                    if (frame.PixelWidth >= 24 && (selected.PixelWidth < 24 || frame.PixelWidth < selected.PixelWidth)) selected = frame;
-                selected.Freeze();
-                currentIcon.Source = selected;
-            }
-        }
-
-        void ToggleIconPicker(object sender, RoutedEventArgs args)
+        async void ApplyTaskbar(object sender, RoutedEventArgs args)
         {
             if (configuring || saving || closing) return;
-            iconPopup.IsOpen = !iconPopup.IsOpen;
-            if (iconPopup.IsOpen) defaultIconButton.Focus();
-        }
-
-        void SelectDefaultIcon(object sender, RoutedEventArgs args)
-        {
-            iconSelection.Reset();
-            RefreshIconPreview();
-            iconPopup.IsOpen = false;
-            iconButton.Focus();
-        }
-
-        void SelectCustomIcon(object sender, RoutedEventArgs args)
-        {
-            iconPopup.IsOpen = false;
+            int mode = taskbarSwitch.IsChecked == true ? 2 : 1;
+            configuring = true;
+            iconPopup.IsOpen = false; taskbarExport.Popup.IsOpen = false;
+            RefreshButtons();
             try
             {
-                string path = ExportDialogs.SelectIcon(new WindowInteropHelper(Window).Handle);
-                if (path != null)
+                TaskbarResult result = await Task.Run(delegate
                 {
-                    iconSelection.SelectCustom(path);
-                    RefreshIconPreview();
-                }
+                    using (var mutex = UpdateService.CreateOperationMutex(executablePath))
+                    {
+                        bool acquired;
+                        try { acquired = mutex.WaitOne(0); } catch (AbandonedMutexException) { acquired = true; }
+                        if (!acquired) throw new InvalidOperationException("Другая операция приложения ещё выполняется.");
+                        try { return TaskbarRepair.Apply(mode); }
+                        finally { mutex.ReleaseMutex(); }
+                    }
+                });
+                if (!result.Succeeded) ShowProblem(result.Reason);
             }
             catch (Exception error) { ShowProblem(error.Message); }
-            iconButton.Focus();
-        }
-
-        void IconPickerKeyDown(object sender, KeyEventArgs args)
-        {
-            if (args.Key == Key.Escape && iconPopup.IsOpen)
-            {
-                iconPopup.IsOpen = false;
-                iconButton.Focus();
-                args.Handled = true;
-            }
+            finally { configuring = false; RefreshButtons(); if (closeAfterAction) Window.Close(); }
         }
 
         void SaveExecutable(object sender, RoutedEventArgs args)
         {
             if (configuring || saving || closing) return;
+            bool taskbar = ReferenceEquals(sender, taskbarExport.Save);
+            SettingExportUi export = taskbar ? taskbarExport : securityExport;
+            FixedAction action = taskbar ? (taskbarSwitch.IsChecked == true ? FixedAction.TaskbarMode2 : FixedAction.TaskbarMode1) : FixedAction.Security;
             saving = true;
-            iconPopup.IsOpen = false;
+            iconPopup.IsOpen = false; taskbarExport.Popup.IsOpen = false;
             RefreshButtons();
             try
             {
-                string destination = ExportDialogs.SaveExecutable(new WindowInteropHelper(Window).Handle);
+                string destination = ExportDialogs.SaveExecutable(new WindowInteropHelper(Window).Handle, taskbar ? "Исправление панели задач.exe" : "Отключить защиту Windows.exe");
                 if (destination == null) return;
-                ExecutableExporter.Save(destination, iconSelection, addToStartMenu.IsChecked == true);
-                string warning = iconSelection.LastWarning;
-                RefreshIconPreview();
+                ExecutableExporter.Save(destination, export.Selection, export.StartMenu.IsChecked == true, action);
+                string warning = export.Selection.LastWarning;
+                export.Refresh();
                 if (!String.IsNullOrWhiteSpace(warning)) ShowProblem(warning);
             }
             catch (Exception error) { ShowProblem(error.Message); }
@@ -441,7 +418,7 @@ namespace JustEnoughTools
                 return;
             }
             closing = true;
-            iconPopup.IsOpen = false;
+            iconPopup.IsOpen = false; taskbarExport.Popup.IsOpen = false;
             RefreshButtons();
             lifetime.Cancel();
             try

@@ -23,6 +23,19 @@ namespace JustEnoughTools.Export
     public sealed class IconSelection
     {
         private string customPath;
+        private readonly string defaultResource;
+        private string builtInResource;
+        public string BuiltInResource { get { return builtInResource; } }
+        public IconSelection(string defaultResource = "SecurityIcon")
+        {
+            SelectBuiltIn(defaultResource);
+            this.defaultResource = defaultResource;
+        }
+        public void SelectBuiltIn(string resource)
+        {
+            if (resource != "SecurityIcon" && resource != "TaskbarIcon") throw new ArgumentException("Неизвестная иконка.");
+            builtInResource = resource; customPath = null; LastWarning = null;
+        }
         public bool IsCustom { get { return customPath != null; } }
         public string LastWarning { get; private set; }
         public void SelectCustom(string path)
@@ -32,7 +45,7 @@ namespace JustEnoughTools.Export
             customPath = Path.GetFullPath(path);
             LastWarning = null;
         }
-        public void Reset() { customPath = null; LastWarning = null; }
+        public void Reset() { SelectBuiltIn(defaultResource); }
         internal void BeginSave() { LastWarning = null; }
         internal void Saved() { customPath = null; }
         public byte[] Read()
@@ -48,7 +61,7 @@ namespace JustEnoughTools.Export
                     LastWarning = "Выбранная иконка недоступна или повреждена. Использована встроенная иконка.";
                 }
             }
-            return IconFile.Validate(EmbeddedAssets.Read("AppIcon"));
+            return IconFile.Validate(EmbeddedAssets.Read(builtInResource));
         }
     }
 
@@ -139,7 +152,8 @@ namespace JustEnoughTools.Export
         [return: MarshalAs(UnmanagedType.Bool)]
         private static extern bool MoveFileEx(string existing, string replacement, uint flags);
 
-        public static void Save(string destination, IconSelection icon, bool addToStartMenu)
+        public static void Save(string destination, IconSelection icon, bool addToStartMenu,
+            JustEnoughTools.Actions.FixedAction action = JustEnoughTools.Actions.FixedAction.Security)
         {
             if (icon == null) throw new ArgumentNullException("icon");
             icon.BeginSave();
@@ -150,7 +164,8 @@ namespace JustEnoughTools.Export
                 throw new IOException("Нельзя заменить работающий JustEnoughTools.");
             string directory = Path.GetDirectoryName(destination);
             if (!Directory.Exists(directory)) throw new DirectoryNotFoundException("Выбранная папка недоступна.");
-            byte[] image = PortableResources.CreateExecutable(EmbeddedAssets.Read("RunnerTemplate"), icon.Read());
+            byte[] image = PortableResources.CreateExecutable(EmbeddedAssets.Read("RunnerTemplate"), icon.Read(), action);
+            if (PortableResources.ReadAction(image) != action) throw new InvalidDataException("Действие сохранённого EXE не подтверждено.");
             var iconChange = ShellIconRefresh.Compare(destination, image);
             WriteVerified(destination, image);
             icon.Saved();

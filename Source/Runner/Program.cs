@@ -7,6 +7,7 @@ using System.Reflection;
 using System.Security.Principal;
 using System.Windows.Forms;
 using JustEnoughTools.Security;
+using JustEnoughTools.Actions;
 
 namespace JustEnoughTools.Runner
 {
@@ -28,6 +29,14 @@ namespace JustEnoughTools.Runner
             bool executionStarted = false;
             try
             {
+                FixedAction action = FixedActionResource.Read();
+                if (action != FixedAction.Security)
+                {
+                    if (elevatedInvocation) throw new InvalidOperationException("Для исправления панели задач служебное повышение прав не используется.");
+                    TaskbarResult result = TaskbarRepair.Apply((int)action);
+                    if (!result.Succeeded) ShowProblems(result.Reason);
+                    return result.Succeeded ? 0 : 2;
+                }
                 bool elevated = IsElevated();
                 // A command-line flag never grants a token or bypasses UAC.
                 if (elevatedInvocation && !elevated)

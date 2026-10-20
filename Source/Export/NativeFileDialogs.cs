@@ -25,9 +25,9 @@ public static class ExportDialogs
     static readonly Guid SaveDialogClass = new Guid("C0B4E2F3-BA21-4773-8DBA-335EC946EB8B");
     static readonly Guid ShellItemId = new Guid("43826D1E-E718-42EE-BC55-A1E261C37BFE");
 
-    public static string SaveExecutable(IntPtr owner)
+    public static string SaveExecutable(IntPtr owner, string fileName = "Отключить защиту Windows.exe")
     {
-        return Show(owner, true);
+        return Show(owner, true, fileName);
     }
 
     public static string SelectIcon(IntPtr owner)
@@ -35,7 +35,7 @@ public static class ExportDialogs
         return Show(owner, false);
     }
 
-    static IFileDialog CreateDialog(bool save)
+    static IFileDialog CreateDialog(bool save, string fileName)
     {
         IFileDialog dialog = (IFileDialog)Activator.CreateInstance(
             Type.GetTypeFromCLSID(save ? SaveDialogClass : OpenDialogClass, true));
@@ -56,7 +56,7 @@ public static class ExportDialogs
             dialog.SetDefaultExtension(save ? "exe" : "ico");
             if (save)
             {
-                dialog.SetFileName("Отключить защиту Windows.exe");
+                dialog.SetFileName(fileName);
                 // Every save starts on the desktop, as requested. SetFolder
                 // intentionally overrides any shell MRU, without erasing it.
                 SetInitialFolder(dialog, Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory));
@@ -86,9 +86,9 @@ public static class ExportDialogs
         }
     }
 
-    static string Show(IntPtr owner, bool save)
+    static string Show(IntPtr owner, bool save, string fileName = "Отключить защиту Windows.exe")
     {
-        IFileDialog dialog = CreateDialog(save);
+        IFileDialog dialog = CreateDialog(save, fileName);
         IShellItem result = null;
         IntPtr name = IntPtr.Zero;
         try

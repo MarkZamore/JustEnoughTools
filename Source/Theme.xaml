@@ -299,4 +299,22 @@
             </ControlTemplate.Triggers>
         </ControlTemplate></Setter.Value></Setter>
     </Style>
+    <Style x:Key="TaskbarModeSwitchStyle" TargetType="CheckBox">
+        <Setter Property="IsThreeState" Value="False"/><Setter Property="VerticalAlignment" Value="Center"/>
+        <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="CheckBox">
+            <Grid Background="Transparent">
+                <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                <TextBlock x:Name="SwitchState" Text="Режим 1" FontSize="12" Foreground="{DynamicResource Brush.TextMuted}" VerticalAlignment="Center" Margin="0,0,10,0" TextWrapping="NoWrap"/>
+                <Border x:Name="SwitchTrack" Grid.Column="1" Width="72" Height="26" CornerRadius="13" Background="{DynamicResource Brush.CheckFill}" VerticalAlignment="Center">
+                    <Grid Margin="4"><Ellipse x:Name="SwitchThumb" Width="18" Height="18" Fill="{DynamicResource Brush.ControlDark}" HorizontalAlignment="Left"><Ellipse.RenderTransform><TranslateTransform X="0"/></Ellipse.RenderTransform></Ellipse></Grid>
+                </Border>
+            </Grid>
+            <ControlTemplate.Triggers>
+                <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="SwitchTrack" Property="Opacity" Value="0.82"/></Trigger>
+                <Trigger SourceName="SwitchTrack" Property="IsMouseOver" Value="True"><Setter TargetName="SwitchTrack" Property="Opacity" Value="0.82"/></Trigger>
+                <Trigger Property="IsPressed" Value="True"><Setter TargetName="SwitchTrack" Property="Opacity" Value="0.65"/></Trigger>
+                <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.4"/></Trigger>
+            </ControlTemplate.Triggers>
+        </ControlTemplate></Setter.Value></Setter>
+    </Style>
 </ResourceDictionary>

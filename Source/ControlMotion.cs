@@ -12,6 +12,46 @@ namespace JustEnoughTools
     {
         public const double DurationMilliseconds = 120;
 
+        public static void AttachTaskbarSwitch(CheckBox control)
+        {
+            System.Windows.Automation.AutomationProperties.SetHelpText(control, "Слева — режим 1, справа — режим 2. Пробел переключает режим.");
+            control.PreviewKeyDown += delegate(object sender, System.Windows.Input.KeyEventArgs args)
+            {
+                if (args.Key == System.Windows.Input.Key.Left || args.Key == System.Windows.Input.Key.Home) control.IsChecked = false;
+                else if (args.Key == System.Windows.Input.Key.Right || args.Key == System.Windows.Input.Key.End) control.IsChecked = true;
+                else return;
+                args.Handled = true;
+            };
+            RoutedEventHandler changed = delegate { UpdateTaskbarSwitch(control, true); };
+            control.Checked += changed; control.Unchecked += changed;
+            control.Loaded += delegate { UpdateTaskbarSwitch(control, false); };
+            control.PreviewMouseLeftButtonDown += delegate(object sender, System.Windows.Input.MouseButtonEventArgs args)
+            {
+                control.ApplyTemplate();
+                var track = control.Template.FindName("SwitchTrack", control) as Border;
+                if (track == null || !track.IsMouseOver) return;
+                bool target = args.GetPosition(track).X >= track.ActualWidth / 2;
+                control.IsChecked = control.IsChecked == target ? !target : target;
+                control.Focus(); args.Handled = true;
+            };
+            UpdateTaskbarSwitch(control, false);
+        }
+        static void UpdateTaskbarSwitch(CheckBox control, bool animate)
+        {
+            control.ApplyTemplate();
+            var label = control.Template.FindName("SwitchState", control) as TextBlock;
+            var thumb = control.Template.FindName("SwitchThumb", control) as Ellipse;
+            if (label != null) label.Text = control.IsChecked == true ? "Режим 2" : "Режим 1";
+            if (thumb == null) return;
+            var transform = thumb.RenderTransform as TranslateTransform;
+            if (transform == null || transform.IsFrozen) { transform = new TranslateTransform(); thumb.RenderTransform = transform; }
+            double before = transform.X, target = control.IsChecked == true ? 46 : 0;
+            transform.BeginAnimation(TranslateTransform.XProperty, null); transform.X = target;
+            if (animate && control.IsLoaded && SystemParameters.ClientAreaAnimation && Math.Abs(before-target) > 0.001)
+                transform.BeginAnimation(TranslateTransform.XProperty, new DoubleAnimation(before, target, TimeSpan.FromMilliseconds(DurationMilliseconds)) {
+                    EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }, FillBehavior = FillBehavior.Stop });
+        }
+
         public static void AttachCategory(Expander category)
         {
             RoutedEventHandler changed = delegate(object sender, RoutedEventArgs args)

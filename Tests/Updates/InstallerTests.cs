@@ -344,8 +344,14 @@ namespace JustEnoughTools.Tests
             {
                 try { WaitUntil(() =>
                 {
+                    // The helper resets its public Ready event before releasing
+                    // the common operation mutex in finally. IsActive can
+                    // therefore become false one scheduling slice before the
+                    // lease is available. Completion must observe both facts;
+                    // the subsequent competing-acquisition assertion stays.
                     try { return File.Exists(Target) && UpdatePackage.HashFile(Target) == NewHash &&
-                        !File.Exists(Package) && !UpdateInstaller.IsActive(Target); }
+                        !File.Exists(Package) && !UpdateInstaller.IsActive(Target) &&
+                        !UpdateService.IsOperationInProgress(Target); }
                     catch (IOException) { return false; }
                     catch (UnauthorizedAccessException) { return false; }
                 }, 25000, "The benign update was not installed and cleaned up."); }
@@ -353,7 +359,8 @@ namespace JustEnoughTools.Tests
                 {
                     string state = " Target=" + (File.Exists(Target) ? UpdatePackage.HashFile(Target) : "missing") +
                         "; package=" + (File.Exists(Package) ? new FileInfo(Package).Length.ToString() : "missing") +
-                        "; active=" + UpdateInstaller.IsActive(Target);
+                        "; active=" + UpdateInstaller.IsActive(Target) +
+                        "; operationBusy=" + UpdateService.IsOperationInProgress(Target);
                     foreach (var child in _children) state += " " + child.Diagnostics();
                     throw new InvalidOperationException(failure.Message + state, failure);
                 }

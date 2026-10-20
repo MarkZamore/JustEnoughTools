@@ -51,7 +51,7 @@ namespace JustEnoughTools.Tests
             var assembly = typeof(DependencyBootstrap).Assembly;
             var target = assembly.GetCustomAttribute<TargetFrameworkAttribute>();
             Require(target != null && target.FrameworkName == ".NETFramework,Version=v4.8", "Application must target net48.");
-            foreach (string name in new[] { "Theme", "Window", "AppIcon", "Changelog", "Dependencies.BsDiff.dll", "Dependencies.ICSharpCode.SharpZipLib.dll" })
+            foreach (string name in new[] { "Theme", "Window", "AppIcon", "RunnerTemplate", "Changelog", "Dependencies.BsDiff.dll", "Dependencies.ICSharpCode.SharpZipLib.dll" })
                 using (var resource = assembly.GetManifestResourceStream(name)) Require(resource != null && resource.Length > 0, "Missing embedded resource: " + name);
             Require(FileVersionInfo.GetVersionInfo(TestContext.ExecutablePath).FileMajorPart == 1, "Invalid EXE version.");
             using (var process = Process.Start(new ProcessStartInfo(TestContext.ExecutablePath, "--self-test")
@@ -65,7 +65,7 @@ namespace JustEnoughTools.Tests
                 string error = process.StandardError.ReadToEnd();
                 Require(process.ExitCode == 0 && output.Contains("Embedded dependencies OK"), "Standalone dependency probe failed: " + error + output);
             }
-            return 9;
+            return 10;
         }
         private static void Require(bool condition, string message) { if (!condition) throw new InvalidOperationException(message); }
     }

@@ -1,0 +1,47 @@
+<Project TreatAsLocalProperty="BaseOutputPath;BaseIntermediateOutputPath;MSBuildProjectExtensionsPath">
+  <!-- Set these before Sdk.props so restore and compile use the same isolated
+       paths, including when the parent overrides its own build directories. -->
+  <PropertyGroup>
+    <BaseOutputPath>$(MSBuildThisFileDirectory)../Build/Runner/bin/</BaseOutputPath>
+    <BaseIntermediateOutputPath>$(MSBuildThisFileDirectory)../Build/Runner/obj/</BaseIntermediateOutputPath>
+    <MSBuildProjectExtensionsPath>$(BaseIntermediateOutputPath)</MSBuildProjectExtensionsPath>
+  </PropertyGroup>
+  <Import Project="Sdk.props" Sdk="Microsoft.NET.Sdk" />
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net48</TargetFramework>
+    <AssemblyName>JustEnoughTools.Runner</AssemblyName>
+    <RootNamespace>JustEnoughTools.Runner</RootNamespace>
+    <StartupObject>JustEnoughTools.Runner.Program</StartupObject>
+    <PlatformTarget>x64</PlatformTarget>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <ReleaseNumber Condition="'$(ReleaseNumber)' == ''">1</ReleaseNumber>
+    <Version>1.0.$(ReleaseNumber)</Version>
+    <FileVersion>1.0.$(ReleaseNumber).0</FileVersion>
+    <InformationalVersion>$(ReleaseNumber)</InformationalVersion>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>../Assets/JustEnoughTools.ico</ApplicationIcon>
+    <GenerateBindingRedirectsOutputType>false</GenerateBindingRedirectsOutputType>
+    <AutoGenerateBindingRedirects>false</AutoGenerateBindingRedirects>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+    <Deterministic>true</Deterministic>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="Program.cs" />
+    <Compile Include="../Security/**/*.cs" />
+    <Reference Include="System.Management" />
+    <Reference Include="System.Runtime.Serialization" />
+    <Reference Include="System.Windows.Forms" />
+    <Reference Include="System.Drawing" />
+    <Reference Include="Microsoft.CSharp" />
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies.net48" Version="1.0.3" PrivateAssets="all" />
+    <AssemblyMetadata Include="ReleaseNumber" Value="$(ReleaseNumber)" />
+    <AssemblyMetadata Include="SourceFingerprint" Value="$(SourceFingerprint)" Condition="'$(SourceFingerprint)' != ''" />
+  </ItemGroup>
+  <Import Project="Sdk.targets" Sdk="Microsoft.NET.Sdk" />
+</Project>

@@ -10,7 +10,7 @@
     <LangVersion>latest</LangVersion>
     <Nullable>disable</Nullable>
     <ImplicitUsings>disable</ImplicitUsings>
-    <DefaultItemExcludes>$(DefaultItemExcludes);Build/**;bin/**;obj/**</DefaultItemExcludes>
+    <DefaultItemExcludes>$(DefaultItemExcludes);Build/**;bin/**;obj/**;Artifacts/**</DefaultItemExcludes>
   </PropertyGroup>
   <ItemGroup>
     <Reference Include="System.Net.Http" />

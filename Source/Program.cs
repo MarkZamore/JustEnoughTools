@@ -3,8 +3,8 @@ using System.Diagnostics;
 using System.Linq;
 using System.Reflection;
 using System.Threading;
-using System.Threading.Tasks;
 using System.Windows;
+using JustEnoughTools.Security;
 using JustEnoughTools.Updates;
 
 namespace JustEnoughTools
@@ -32,29 +32,11 @@ namespace JustEnoughTools
                 try { EmbeddedDependencyProbe.Run(); Console.WriteLine("Embedded dependencies OK"); return 0; }
                 catch (Exception error) { Console.Error.WriteLine(error); return 1; }
             }
-            if (args.Length == 1 && args[0] == "--inspect-protection")
-            {
-                try
-                {
-                    var snapshot = Protection.ProtectionService.Inspect();
-                    WriteDiagnosticJson(snapshot);
-                    return 0;
-                }
-                catch (Exception error) { Console.Error.WriteLine(error); return 1; }
-            }
-            if (args.Length == 1 && (args[0] == "--inspect-configuration" || args[0] == "--check-configuration"))
-            {
-                try
-                {
-                    var context = Protection.SupportedProtectionContext.Inspect();
-                    object result = args[0] == "--inspect-configuration" ? (object)context : Protection.SupportedConfiguration.Check(context);
-                    WriteDiagnosticJson(result);
-                    return 0;
-                }
-                catch (Exception error) { Console.Error.WriteLine(error); return 1; }
-            }
             int workerExitCode;
-            if (ProtectionCoordinator.TryRunWorker(args, out workerExitCode)) return workerExitCode;
+            if (SecurityCoordinator.TryRunWorker(args, out workerExitCode)) return workerExitCode;
+            // Unknown/private legacy arguments must never launch a window or
+            // accidentally become an instruction to change Windows settings.
+            if (args.Length != 0) return 2;
             string path = Process.GetCurrentProcess().MainModule.FileName;
             try
             {
@@ -64,7 +46,7 @@ namespace JustEnoughTools
                     if (!instance.IsPrimary) { instance.ActivateExisting(); return 0; }
                     if (UpdateService.TryApplyPreparedBeforeStartup(path, ReleaseNumber)) return 0;
                     var app = new Application { ShutdownMode = ShutdownMode.OnMainWindowClose };
-                    var controller = new MainWindowController(ReleaseNumber, path, ConfigureProtectionAsync);
+                    var controller = new MainWindowController(ReleaseNumber, path, SecurityCoordinator.ConfigureAsync);
                     app.MainWindow = controller.Window;
                     instance.OnActivate(() => app.Dispatcher.BeginInvoke(new Action(() =>
                     {
@@ -82,23 +64,6 @@ namespace JustEnoughTools
             }
         }
 
-        private static Task<string> ConfigureProtectionAsync(IProgress<string> progress)
-        {
-            return ProtectionCoordinator.ConfigureAsync(progress);
-        }
-
-        private static void WriteDiagnosticJson(object value)
-        {
-            // A WinExe can have redirected stdout without an attached console.
-            // Console.OutputEncoding calls SetConsoleOutputCP, which then fails.
-            string json = new System.Web.Script.Serialization.JavaScriptSerializer().Serialize(value);
-            byte[] bytes = System.Text.Encoding.UTF8.GetBytes(json + Environment.NewLine);
-            using (var output = Console.OpenStandardOutput())
-            {
-                output.Write(bytes, 0, bytes.Length);
-                output.Flush();
-            }
-        }
     }
 
     internal sealed class ApplicationInstance : IDisposable

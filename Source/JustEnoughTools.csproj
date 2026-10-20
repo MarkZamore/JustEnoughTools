@@ -25,18 +25,20 @@
     <DebugSymbols>false</DebugSymbols>
     <Deterministic>true</Deterministic>
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
-    <DefaultItemExcludes>$(DefaultItemExcludes);Build/**;Patch/**;Tools/**;bin/**;obj/**</DefaultItemExcludes>
+    <DefaultItemExcludes>$(DefaultItemExcludes);Build/**;Patch/**;Tools/**;Runner/**;bin/**;obj/**</DefaultItemExcludes>
   </PropertyGroup>
   <ItemGroup>
     <Reference Include="System.Runtime.Serialization" />
     <Reference Include="System.Net.Http" />
     <Reference Include="System.Management" />
-    <Reference Include="System.Web.Extensions" />
+    <Reference Include="System.Drawing" />
+    <Reference Include="Microsoft.CSharp" />
     <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies.net48" Version="1.0.3" PrivateAssets="all" />
     <PackageReference Include="BsDiff" Version="1.1.0" />
     <EmbeddedResource Include="Theme.xaml" LogicalName="Theme" />
     <EmbeddedResource Include="Window.xaml" LogicalName="Window" />
     <EmbeddedResource Include="Assets/JustEnoughTools.ico" LogicalName="AppIcon" />
+    <EmbeddedResource Include="$(MSBuildThisFileDirectory)Build/Runner/bin/$(Configuration)/net48/JustEnoughTools.Runner.exe" LogicalName="RunnerTemplate" />
     <EmbeddedResource Include="Changelog.md" LogicalName="Changelog" />
     <EmbeddedResource Include="../THIRD-PARTY-NOTICES.txt" LogicalName="ThirdPartyNotices" />
     <AssemblyMetadata Include="ReleaseNumber" Value="$(ReleaseNumber)" />
@@ -44,6 +46,10 @@
     <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
       <_Parameter1>JustEnoughTools.Tests</_Parameter1>
     </AssemblyAttribute>
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="Runner/Runner.csproj" ReferenceOutputAssembly="false" Private="false"
+                      GlobalPropertiesToRemove="BaseOutputPath;BaseIntermediateOutputPath;MSBuildProjectExtensionsPath" />
   </ItemGroup>
   <Target Name="EmbedManagedDependencies" AfterTargets="ResolveReferences" BeforeTargets="AssignTargetPaths">
     <ItemGroup>

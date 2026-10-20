@@ -34,26 +34,49 @@
                         BorderBrush="{DynamicResource Brush.Border}" BorderThickness="{StaticResource Border.Control}"
                         CornerRadius="{StaticResource Radius.Panel}" Padding="{StaticResource Pad.Panel}">
                     <Grid>
-                        <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                        <TextBlock Style="{StaticResource CategoryIcon}" Text="&#xEA18;"/>
-                        <StackPanel Grid.Column="1" VerticalAlignment="Center" Margin="0,0,16,0">
-                            <TextBlock x:Name="ProtectionTitle" Text="Встроенная защита Windows"/>
-                            <TextBlock x:Name="ProtectionDescription" Style="{StaticResource Caption}"
-                                       Margin="{StaticResource Gap.Subtitle}" Text="Штатно отключить Defender и скрыть его раздел интерфейса."/>
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+                        <Grid Grid.Row="0" Grid.Column="0" VerticalAlignment="Center" Margin="0,0,16,0">
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                            <TextBlock x:Name="ProtectionIcon" Style="{StaticResource CategoryIcon}" Text="&#xEA18;"/>
+                            <TextBlock x:Name="ProtectionTitle" Grid.Column="1" Text="Отключить защиту Windows (временно)" VerticalAlignment="Center"/>
+                        </Grid>
+                        <StackPanel Grid.Row="0" Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
+                            <Button x:Name="ConfigureSecurityButton" Content="Отключить" MinWidth="{StaticResource Size.ActionButton}"
+                                    Margin="0,0,8,0" ToolTipService.ShowOnDisabled="True" ToolTipService.ShowDuration="60000"
+                                    AutomationProperties.Name="Применить доступные настройки защиты Windows"/>
+                            <Button x:Name="SaveButton" Content="Сохранить" Margin="0,0,8,0"
+                                    ToolTip="Сохранить автономный EXE для выполнения настройки"/>
+                            <Button x:Name="IconButton" Width="{Binding ActualHeight, ElementName=SaveButton}"
+                                    Height="{Binding ActualHeight, ElementName=SaveButton}" Padding="4"
+                                    ToolTip="Выбрать иконку" AutomationProperties.Name="Выбрать иконку">
+                                <Image x:Name="CurrentIcon" Width="24" Height="24"/>
+                            </Button>
                         </StackPanel>
-                        <Button x:Name="DeleteProtectionButton" Grid.Column="2" Content="Отключить"
-                                MinWidth="{StaticResource Size.ActionButton}" VerticalAlignment="Center"
-                                AutomationProperties.Name="Штатно отключить Microsoft Defender"/>
+                        <CheckBox x:Name="AddToStartMenu" Grid.Row="1" Grid.Column="0" Content="Добавить в меню пуск"
+                                  IsChecked="True" MinHeight="32" Margin="0,8,16,0"
+                                  ToolTip="Создать ярлык сохранённого EXE в меню «Пуск» текущего пользователя"/>
+                        <TextBlock x:Name="ProtectionDescription" Grid.Row="1" Grid.Column="1" Style="{StaticResource Caption}"
+                                   Margin="0,8,0,0" HorizontalAlignment="Right" VerticalAlignment="Center"
+                                   Text="Требуются права администратора"/>
+                        <Popup x:Name="IconPopup" PlacementTarget="{Binding ElementName=IconButton}" Placement="Top"
+                               StaysOpen="False" AllowsTransparency="True" PopupAnimation="Fade" VerticalOffset="-8">
+                            <Border Background="{DynamicResource Brush.Popup}" BorderBrush="{DynamicResource Brush.Border}"
+                                    BorderThickness="{StaticResource Border.Control}" CornerRadius="{StaticResource Radius.Panel}"
+                                    Padding="{StaticResource Pad.Popup}">
+                                <StackPanel x:Name="IconChoices" KeyboardNavigation.TabNavigation="Cycle">
+                                    <Button x:Name="DefaultIconButton" Margin="0,0,0,8" HorizontalContentAlignment="Left">
+                                        <StackPanel Orientation="Horizontal">
+                                            <Image x:Name="DefaultIconPreview" Width="24" Height="24" Margin="0,0,8,0"/>
+                                            <TextBlock Text="Стандартная" VerticalAlignment="Center"/>
+                                        </StackPanel>
+                                    </Button>
+                                    <Button x:Name="CustomIconButton" Content="Выбрать ICO…" HorizontalContentAlignment="Left"/>
+                                </StackPanel>
+                            </Border>
+                        </Popup>
                     </Grid>
                 </Border>
-                <TextBlock x:Name="ProtectionStatus" Text=""
-                           Margin="{StaticResource Gap.Subtitle}" AutomationProperties.LiveSetting="Polite">
-                    <TextBlock.Style>
-                        <Style TargetType="TextBlock" BasedOn="{StaticResource Caption}">
-                            <Style.Triggers><Trigger Property="Text" Value=""><Setter Property="Visibility" Value="Collapsed"/></Trigger></Style.Triggers>
-                        </Style>
-                    </TextBlock.Style>
-                </TextBlock>
             </StackPanel>
         </ScrollViewer>
         <Grid x:Name="UpdateArea" Grid.Row="1" Margin="{StaticResource Gap.Footer}">

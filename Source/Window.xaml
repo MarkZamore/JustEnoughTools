@@ -15,7 +15,11 @@
                 <Expander x:Name="WalkieTalkieSection" Margin="{StaticResource Gap.Row}" AutomationProperties.Name="WalkieTalkie">
                     <Expander.Header>
                         <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-                            <TextBlock Style="{StaticResource CategoryIcon}" Text="&#xE720;" Height="20" LineHeight="20" LineStackingStrategy="BlockLineHeight"/>
+                            <Grid Width="20" Height="20" Margin="{StaticResource Gap.CategoryIcon}" VerticalAlignment="Center">
+                                <Path Width="14" Height="20" HorizontalAlignment="Right" Stretch="Fill"
+                                      Stroke="{DynamicResource Brush.Text}" StrokeThickness="1.4" StrokeLineJoin="Round" StrokeStartLineCap="Round" StrokeEndLineCap="Round"
+                                      Data="M8 7 C8 4.8 9.8 3 12 3 C14.2 3 16 4.8 16 7 L16 12 C16 14.2 14.2 16 12 16 C9.8 16 8 14.2 8 12 Z M5 11 L5 12 C5 16 8 19 12 19 C16 19 19 16 19 12 L19 11 M12 19 L12 22 M9 22 L15 22"/>
+                            </Grid>
                             <TextBlock Grid.Column="1" Text="WalkieTalkie" VerticalAlignment="Center"/>
                         </Grid>
                     </Expander.Header>
@@ -24,7 +28,11 @@
                 <Expander x:Name="ClickerSection" Margin="{StaticResource Gap.Row}" AutomationProperties.Name="Clicker">
                     <Expander.Header>
                         <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-                            <TextBlock Style="{StaticResource CategoryIcon}" Text="&#xE962;" Height="20" LineHeight="20" LineStackingStrategy="BlockLineHeight"/>
+                            <Grid Width="20" Height="20" Margin="{StaticResource Gap.CategoryIcon}" VerticalAlignment="Center">
+                                <Path Width="14" Height="20" HorizontalAlignment="Right" Stretch="Fill"
+                                      Stroke="{DynamicResource Brush.Text}" StrokeThickness="1.4" StrokeLineJoin="Round" StrokeStartLineCap="Round" StrokeEndLineCap="Round"
+                                      Data="M12 3 C8.5 3 6 5.5 6 9 L6 15 C6 19 8.5 21 12 21 C15.5 21 18 19 18 15 L18 9 C18 5.5 15.5 3 12 3 Z M12 3 L12 11"/>
+                            </Grid>
                             <TextBlock Grid.Column="1" Text="Clicker" VerticalAlignment="Center"/>
                         </Grid>
                     </Expander.Header>
@@ -38,7 +46,7 @@
                         <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
                         <Grid Grid.Row="0" Grid.Column="0" VerticalAlignment="Center" Margin="0,0,16,0">
                             <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-                            <Path x:Name="ProtectionIcon" Width="20" Height="20" Margin="0,0,16,0" Stretch="Uniform"
+                            <Path x:Name="ProtectionIcon" Width="20" Height="20" Margin="{StaticResource Gap.CategoryIcon}" Stretch="Uniform"
                                   Stroke="{DynamicResource Brush.Text}" StrokeThickness="1.4" StrokeLineJoin="Round" StrokeStartLineCap="Round" StrokeEndLineCap="Round"
                                   Data="M12 3 L20 6 L19.5 12 C19 16 16 19 12 21 C8 19 5 16 4.5 12 L4 6 Z M3 21 L21 3"/>
                             <TextBlock x:Name="ProtectionTitle" Grid.Column="1" Text="Отключить защиту Windows (временно)" VerticalAlignment="Center"/>
@@ -80,7 +88,7 @@
                         <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
                         <Grid Grid.Row="0" Grid.Column="0" VerticalAlignment="Center" Margin="0,0,16,0">
                             <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-                            <Path x:Name="TaskbarSettingIcon" Width="20" Height="20" Margin="0,0,16,0" Stretch="Uniform"
+                            <Path x:Name="TaskbarSettingIcon" Width="20" Height="20" Margin="{StaticResource Gap.CategoryIcon}" Stretch="Uniform"
                                   Stroke="{DynamicResource Brush.Text}" StrokeThickness="1.4" StrokeLineJoin="Round" StrokeStartLineCap="Round" StrokeEndLineCap="Round"
                                   Data="M3 5 L21 5 L21 18 L3 18 Z M3 14 L21 14 M12 18 L12 21 M8 21 L16 21 M9 16 L10 16 M12 16 L13 16 M15 16 L16 16"/>
                             <TextBlock x:Name="TaskbarTitle" Grid.Column="1" Text="Исправление панели задач" VerticalAlignment="Center"/>

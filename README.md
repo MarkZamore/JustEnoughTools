@@ -60,7 +60,7 @@ Tamper Protection, Smart App Control и SmartScreen приложений Store �
 Для сборки нужны Windows, .NET SDK 10.0.400 или совместимый 10.0 SDK и NuGet при первом восстановлении. Номер выпуска равен числу коммитов в `main`; перед следующим коммитом используется текущее число плюс один. Начиная с выпуска 5 видимые в Windows версия файла (FileVersion) и версия продукта (ProductVersion) показывают одно число `N`, как в Autonomy&Performance. Внутренняя AssemblyVersion сохраняет технический формат `1.0.N.0`.
 
 ```powershell
-.\Source\Build.ps1 -ReleaseNumber 7
+.\Source\Build.ps1 -ReleaseNumber 8
 .\Tests\Test.ps1 -ExecutablePath .\JustEnoughTools.exe
 .\.github\tests\ReleaseTests.ps1
 ```

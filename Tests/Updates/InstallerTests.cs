@@ -194,10 +194,9 @@ namespace JustEnoughTools.Tests
                         @"Local\JustEnoughTools.Update." + UpdateService.GetInstanceKey(fixture.Target), key + ".Ready", key + ".Intent", key + ".Cancel",
                         source.Id, source.StartTime.ToUniversalTime().Ticks, (long)fixture.Payload.Length,
                         fixture.NewHash, 2, 1, fixture.OldHash, false });
-                    script = Regex.Replace(script, @"(?m)^[ \t]+", string.Empty);
                     string shell = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
                     using (var helper = Process.Start(new ProcessStartInfo(shell,
-                        "-NoLogo -NoProfile -NonInteractive -EncodedCommand " + Convert.ToBase64String(Encoding.Unicode.GetBytes(script)))
+                        "-NoLogo -NoProfile -NonInteractive -EncodedCommand " + UpdateInstaller.EncodeScript(script))
                     { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true }))
                     {
                         try
@@ -217,6 +216,7 @@ namespace JustEnoughTools.Tests
                             Check(!UpdateInstaller.IsActive(fixture.Target), "A cancelled helper retained installer coordination.");
                             Check(Directory.GetFiles(fixture.AppDirectory).Length == 2 && Directory.GetDirectories(fixture.AppDirectory).Length == 0,
                                 "A cancelled helper created an unexpected artifact.");
+                            fixture.CheckNoTransientAppArtifacts();
                         }
                         finally
                         {
@@ -245,6 +245,7 @@ namespace JustEnoughTools.Tests
                 Check(UpdatePackage.IsViableExecutable(fixture.Package), "The surviving replacement is not a viable EXE.");
                 Check(Directory.GetFiles(fixture.AppDirectory).Select(Path.GetFileName).SequenceEqual(new[] { "JustEnoughTools.update" }),
                     "A failed helper created a script, log, journal or backup.");
+                fixture.CheckNoTransientAppArtifacts();
             }
         }
 
@@ -273,6 +274,10 @@ namespace JustEnoughTools.Tests
             private readonly string _controller;
             private readonly string _signalName;
             private readonly List<Child> _children = new List<Child>();
+            private readonly FileSystemWatcher _artifactWatcher;
+            private readonly object _observedGate = new object();
+            private readonly HashSet<string> _observedNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            private Exception _watcherError;
             internal readonly string AppDirectory;
             internal readonly string Target;
             internal readonly string Package;
@@ -306,6 +311,19 @@ namespace JustEnoughTools.Tests
                 });
                 _signalName = @"Local\JET.InstallerTest.Started." + Guid.NewGuid().ToString("N");
                 RestartSignal = new Semaphore(0, 10, _signalName);
+                // A final directory listing misses short-lived ReplaceFile ~RF
+                // names. Observe every name from before handoff through exit.
+                _artifactWatcher = new FileSystemWatcher(AppDirectory)
+                {
+                    IncludeSubdirectories = true,
+                    NotifyFilter = NotifyFilters.FileName | NotifyFilters.DirectoryName,
+                    InternalBufferSize = 32768
+                };
+                _artifactWatcher.Created += (sender, args) => ObserveName(args.Name);
+                _artifactWatcher.Deleted += (sender, args) => ObserveName(args.Name);
+                _artifactWatcher.Renamed += (sender, args) => { ObserveName(args.OldName); ObserveName(args.Name); };
+                _artifactWatcher.Error += (sender, args) => { lock (_observedGate) _watcherError = args.GetException(); };
+                _artifactWatcher.EnableRaisingEvents = true;
             }
 
             internal Child Schedule(bool restart) => StartChild("schedule", restart);
@@ -347,6 +365,30 @@ namespace JustEnoughTools.Tests
                 Check(Directory.GetDirectories(AppDirectory).Length == 0, "The updater created its own directory.");
                 Check(Directory.GetFiles(AppDirectory).Select(Path.GetFileName).SequenceEqual(new[] { "Target.exe" }),
                     "The updater left a package, script, journal, log or backup after success.");
+                CheckNoTransientAppArtifacts(true);
+            }
+
+            private void ObserveName(string name)
+            {
+                lock (_observedGate) _observedNames.Add(name ?? "<missing>");
+            }
+
+            internal void CheckNoTransientAppArtifacts(bool requireRenameObservations = false)
+            {
+                // Installer coordination is already released; allow outstanding
+                // asynchronous directory notifications to reach the callbacks.
+                Thread.Sleep(200);
+                lock (_observedGate)
+                {
+                    Check(_watcherError == null, "Directory observation failed: " + _watcherError);
+                    if (requireRenameObservations)
+                        Check(_observedNames.Contains(Path.GetFileName(Target)) && _observedNames.Contains(Path.GetFileName(Package)),
+                            "Directory observation did not capture the package-to-target transition.");
+                    string[] unexpected = _observedNames.Where(name =>
+                        !string.Equals(name, Path.GetFileName(Target), StringComparison.OrdinalIgnoreCase) &&
+                        !string.Equals(name, Path.GetFileName(Package), StringComparison.OrdinalIgnoreCase)).ToArray();
+                    Check(unexpected.Length == 0, "The updater created transient extra names: " + string.Join(", ", unexpected));
+                }
             }
 
             public void Dispose()
@@ -354,6 +396,7 @@ namespace JustEnoughTools.Tests
                 foreach (var child in _children) child.AllowExit();
                 foreach (var child in _children) child.Dispose();
                 WaitUntil(() => !UpdateInstaller.IsActive(Target), 35000, "A test helper is still active during cleanup.");
+                _artifactWatcher.Dispose();
                 RestartSignal.Dispose();
                 var temporaryRoot = Path.GetFullPath(Path.GetTempPath()).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
                 if (!_root.StartsWith(temporaryRoot, StringComparison.OrdinalIgnoreCase) ||

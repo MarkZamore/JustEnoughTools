@@ -74,9 +74,8 @@ namespace JustEnoughTools.Updates
                     if (!File.Exists(powershell))
                         throw new FileNotFoundException("Системный Windows PowerShell недоступен.");
 
-                    script = Regex.Replace(script, @"(?m)^[ \t]+", string.Empty);
                     var arguments = "-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -EncodedCommand " +
-                        Convert.ToBase64String(Encoding.Unicode.GetBytes(script));
+                        EncodeScript(script);
                     if (powershell.Length + arguments.Length + 4 >= 32767)
                         throw new InvalidOperationException("Команда установщика превышает ограничение Windows.");
 
@@ -205,6 +204,13 @@ namespace JustEnoughTools.Updates
         private static string Hex(byte[] bytes) => BitConverter.ToString(bytes).Replace("-", "").ToLowerInvariant();
         private static string Encoded(string value) => Convert.ToBase64String(Encoding.UTF8.GetBytes(value));
 
+        internal static string EncodeScript(string script)
+        {
+            script = Regex.Replace(script, @"(?m)^[ \t]+", string.Empty);
+            script = Regex.Replace(script, @"(?m)^#[^\r\n]*(?:\r?\n|$)", string.Empty);
+            return Convert.ToBase64String(Encoding.Unicode.GetBytes(script.Replace("\r\n", "\n")));
+        }
+
         private static string BuildScript(string executable, string package, string names, string handoff,
             string intent, string cancel, int sourcePid, long sourceStartTicks, long payloadLength,
             string payloadHash, int targetRelease, int currentRelease, string originalHash, bool restart)
@@ -332,6 +338,24 @@ function Clear-Hidden {
     $attributes = [int][IO.File]::GetAttributes($target)
     [IO.File]::SetAttributes($target, [IO.FileAttributes]($attributes -band (-bnot [int][IO.FileAttributes]::Hidden)))
 }
+function Initialize-Rename {
+    $a = [AppDomain]::CurrentDomain.DefineDynamicAssembly((New-Object Reflection.AssemblyName('JET.Rename')), [Reflection.Emit.AssemblyBuilderAccess]::Run)
+    $t = $a.DefineDynamicModule('M').DefineType('NativeRename', [Reflection.TypeAttributes]'Public, Abstract, Sealed')
+    $m = $t.DefineMethod('Move', [Reflection.MethodAttributes]'Public, Static, PinvokeImpl', [bool], [Type[]]@([string], [string], [uint32]))
+    $d = [Runtime.InteropServices.DllImportAttribute]
+    $c = $d.GetConstructor([Type[]]@([string]))
+    $f = [Reflection.FieldInfo[]]@($d.GetField('EntryPoint'), $d.GetField('CharSet'), $d.GetField('SetLastError'), $d.GetField('ExactSpelling'))
+    $m.SetCustomAttribute([Reflection.Emit.CustomAttributeBuilder]::new($c, [object[]]@('kernel32.dll'), $f, [object[]]@('MoveFileExW', [Runtime.InteropServices.CharSet]::Unicode, $true, $true)))
+    $m.SetImplementationFlags([Reflection.MethodImplAttributes]::PreserveSig)
+    $script:nativeRename = $t.CreateType()
+}
+function Move-IntoPlace {
+    # Same-directory rename, REPLACE_EXISTING | WRITE_THROUGH, never copy/delete.
+    if (-not $script:nativeRename::Move($package, $target, [uint32]9)) {
+        $moveError = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+        throw (New-Object ComponentModel.Win32Exception($moveError))
+    }
+}
 try {
     $handoff = [Threading.EventWaitHandle]::OpenExisting((Decode '@HANDOFF@'))
     $intent = [Threading.EventWaitHandle]::OpenExisting((Decode '@INTENT@'))
@@ -354,6 +378,7 @@ try {
         $operation = [Threading.Mutex]::OpenExisting($operationName, $rights)
         try { $operationOwned = $operation.WaitOne(0) } catch [Threading.AbandonedMutexException] { $operationOwned = $true }
         if (-not $operationOwned) { throw 'A protection operation owns the shared lease.' }
+        Initialize-Rename
         $activeReady = New-Object Threading.EventWaitHandle($false, [Threading.EventResetMode]::ManualReset, ($names + '.Ready'))
         $restartRequest = New-Object Threading.EventWaitHandle($false, [Threading.EventResetMode]::ManualReset, ($names + '.Restart'))
         $restartAccepted = New-Object Threading.EventWaitHandle($false, [Threading.EventResetMode]::ManualReset, ($names + '.RestartAccepted'))
@@ -414,11 +439,8 @@ try {
                         if ($oldHash -cne $originalHash) { throw 'The target changed while the installer waited.' }
                     }
                     $replacementAttempted = $true
-                    [IO.File]::Replace($package, $target, [NullString]::Value)
-                } else {
-                    $replacementAttempted = $true
-                    [IO.File]::Move($package, $target)
                 }
+                Move-IntoPlace
                 if (-not (Test-Raw $target)) { throw 'Installed executable checksum mismatch.' }
                 Clear-Hidden
                 $installed = $true
@@ -432,11 +454,11 @@ try {
         $exitCode = 0
     }
 } catch {
-    # In particular, do not delete the package here: ReplaceFile may have
-    # removed the old target before reporting a failed rename.
+    # Never delete the verified package after a failed rename. A missing target
+    # can be recovered from it without creating another name or backup.
     if ($owned -and $committed -and $sourceExited -and -not [IO.File]::Exists($target) -and (Test-Raw $package)) {
         try {
-            [IO.File]::Move($package, $target)
+            Move-IntoPlace
             if (Test-Raw $target) { Clear-Hidden; $installed = $true; $exitCode = 0 }
         } catch { }
     }

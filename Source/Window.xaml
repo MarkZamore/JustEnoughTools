@@ -15,7 +15,7 @@
                 <Expander x:Name="WalkieTalkieSection" Margin="{StaticResource Gap.Row}" AutomationProperties.Name="WalkieTalkie">
                     <Expander.Header>
                         <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-                            <TextBlock Style="{StaticResource CategoryIcon}" Text="&#xE720;"/>
+                            <TextBlock Style="{StaticResource CategoryIcon}" Text="&#xE720;" Height="20" LineHeight="20" LineStackingStrategy="BlockLineHeight"/>
                             <TextBlock Grid.Column="1" Text="WalkieTalkie" VerticalAlignment="Center"/>
                         </Grid>
                     </Expander.Header>
@@ -24,7 +24,7 @@
                 <Expander x:Name="ClickerSection" Margin="{StaticResource Gap.Row}" AutomationProperties.Name="Clicker">
                     <Expander.Header>
                         <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-                            <TextBlock Style="{StaticResource CategoryIcon}" Text="&#xE962;"/>
+                            <TextBlock Style="{StaticResource CategoryIcon}" Text="&#xE962;" Height="20" LineHeight="20" LineStackingStrategy="BlockLineHeight"/>
                             <TextBlock Grid.Column="1" Text="Clicker" VerticalAlignment="Center"/>
                         </Grid>
                     </Expander.Header>

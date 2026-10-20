@@ -63,22 +63,35 @@ try {
     $assemblyInfo = @"
 using System.Reflection;
 [assembly: AssemblyVersion("1.0.1.0")]
-[assembly: AssemblyFileVersion("1.0.1.0")]
+[assembly: AssemblyFileVersion("1")]
 [assembly: AssemblyMetadata("ReleaseNumber", "1")]
 [assembly: AssemblyMetadata("SourceFingerprint", "$withTheme")]
 "@
-    Write-Fixture 'Build/AssemblyInfo.cs' $assemblyInfo
     $compiler = Join-Path $env:WINDIR 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'
     $executable = Join-Path $fixture 'JustEnoughTools.exe'
-    & $compiler /nologo /target:winexe /platform:x64 "/out:$executable" `
-        (Join-Path $fixture 'Source/App.cs') (Join-Path $fixture 'Build/AssemblyInfo.cs')
-    if ($LASTEXITCODE -ne 0) { throw 'The provenance fixture EXE could not be compiled.' }
+    function Compile-FixtureExecutable([string]$FileVersion) {
+        Write-Fixture 'Build/AssemblyInfo.cs' ($assemblyInfo.Replace('AssemblyFileVersion("1")',
+            ('AssemblyFileVersion("{0}")' -f $FileVersion)))
+        & $compiler /nologo /target:winexe /platform:x64 "/out:$executable" `
+            (Join-Path $fixture 'Source/App.cs') (Join-Path $fixture 'Build/AssemblyInfo.cs')
+        if ($LASTEXITCODE -ne 0) { throw 'The provenance fixture EXE could not be compiled.' }
+    }
+    Compile-FixtureExecutable '1'
     Check ((& $helper -RepositoryRoot $fixture) -eq $withTheme) 'the root EXE and generated metadata do not make the hash self-referential'
     Commit-Fixture
     Check ((& $helper -RepositoryRoot $fixture -Committed) -eq $withTheme) 'committed input blobs equal the pre-commit identity'
     $answer = & $verifier -RepositoryRoot $fixture -ReleaseNumber 1
     Check ($answer.ReleaseNumber -eq 1) 'matching tracked EXE metadata is accepted'
 
+    Compile-FixtureExecutable '1.0.1.0'
+    Commit-Fixture -Amend
+    $rejected = $false
+    try { & $verifier -RepositoryRoot $fixture -ReleaseNumber 1 | Out-Null }
+    catch { $rejected = $_.Exception.Message -like '*FileVersion must be 1;*' }
+    Check $rejected 'legacy four-part FileVersion is rejected even when its assembly release and source fingerprint match'
+
+    Compile-FixtureExecutable '1'
+    Commit-Fixture -Amend
     Write-Fixture 'Source/App.cs' ($source.Replace('return 0;', 'return 1;'))
     Commit-Fixture -Amend
     $rejected = $false

@@ -53,7 +53,11 @@ namespace JustEnoughTools.Tests
             Require(target != null && target.FrameworkName == ".NETFramework,Version=v4.8", "Application must target net48.");
             foreach (string name in new[] { "Theme", "Window", "AppIcon", "RunnerTemplate", "Changelog", "Dependencies.BsDiff.dll", "Dependencies.ICSharpCode.SharpZipLib.dll" })
                 using (var resource = assembly.GetManifestResourceStream(name)) Require(resource != null && resource.Length > 0, "Missing embedded resource: " + name);
-            Require(FileVersionInfo.GetVersionInfo(TestContext.ExecutablePath).FileMajorPart == 1, "Invalid EXE version.");
+            var version = FileVersionInfo.GetVersionInfo(TestContext.ExecutablePath);
+            int releaseNumber;
+            Require(Int32.TryParse(version.FileVersion, out releaseNumber) && releaseNumber > 0 &&
+                version.FileVersion == releaseNumber.ToString(System.Globalization.CultureInfo.InvariantCulture) &&
+                version.ProductVersion == version.FileVersion, "File and product versions must contain only the release number.");
             using (var process = Process.Start(new ProcessStartInfo(TestContext.ExecutablePath, "--self-test")
             {
                 UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true,

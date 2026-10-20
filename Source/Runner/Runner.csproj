@@ -19,7 +19,7 @@
     <ImplicitUsings>disable</ImplicitUsings>
     <ReleaseNumber Condition="'$(ReleaseNumber)' == ''">1</ReleaseNumber>
     <Version>1.0.$(ReleaseNumber)</Version>
-    <FileVersion>1.0.$(ReleaseNumber).0</FileVersion>
+    <FileVersion>$(ReleaseNumber)</FileVersion>
     <InformationalVersion>$(ReleaseNumber)</InformationalVersion>
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
     <ApplicationManifest>app.manifest</ApplicationManifest>

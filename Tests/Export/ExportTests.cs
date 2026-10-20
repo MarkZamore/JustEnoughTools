@@ -50,6 +50,11 @@ namespace JustEnoughTools.Tests
                 string destination = Path.Combine(root, "Saved.exe");
                 ExecutableExporter.WriteVerified(destination, image);
                 Require(ExecutableExporter.Equal(File.ReadAllBytes(destination), image), "The saved bytes differ from the verified image.");
+                var exportedVersion = System.Diagnostics.FileVersionInfo.GetVersionInfo(destination);
+                var applicationVersion = System.Diagnostics.FileVersionInfo.GetVersionInfo(TestContext.ExecutablePath);
+                Require(exportedVersion.FileVersion == applicationVersion.FileVersion &&
+                    exportedVersion.ProductVersion == applicationVersion.ProductVersion,
+                    "The exported EXE must preserve the single-number file and product versions.");
                 AssertNativeIcon(destination, PortableResources.PinnedIconIndex(image));
                 using (var locked = new FileStream(destination, FileMode.Open, FileAccess.Read, FileShare.Read))
                     Reject(() => ExecutableExporter.WriteVerified(destination, different), "Replacing a locked EXE must fail.");

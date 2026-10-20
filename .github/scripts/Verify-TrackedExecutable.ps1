@@ -19,9 +19,8 @@ $actual = (& git -C $root hash-object -- $exe).Trim()
 if ($LASTEXITCODE -ne 0 -or $tracked -ne $actual) { throw 'The executable differs from the committed bytes.' }
 
 $info = [Diagnostics.FileVersionInfo]::GetVersionInfo($exe)
-$version = [Version]$info.FileVersion
-if ($version.Major -ne 1 -or $version.Minor -ne 0 -or $version.Build -ne $ReleaseNumber) {
-    throw "The root EXE version must be 1.0.$ReleaseNumber.0; found $version."
+if ($info.FileVersion -cne [string]$ReleaseNumber) {
+    throw "The root EXE FileVersion must be $ReleaseNumber; found '$($info.FileVersion)'."
 }
 $assemblyName = [Reflection.AssemblyName]::GetAssemblyName($exe)
 if ($assemblyName.Name -ne 'JustEnoughTools' -or $assemblyName.Version.Build -ne $ReleaseNumber) {

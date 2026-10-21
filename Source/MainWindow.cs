@@ -74,6 +74,7 @@ namespace JustEnoughTools
                     Window.Icon = BitmapFrame.Create(icon, BitmapCreateOptions.PreservePixelFormat, BitmapCacheOption.OnLoad);
             }
             WindowsTheme.Attach(Window);
+            SmoothScrollingController.Attach((ScrollViewer)Window.FindName("SettingsScroll"));
             ControlMotion.AttachCategory((Expander)Window.FindName("WalkieTalkieSection"));
             ControlMotion.AttachCategory((Expander)Window.FindName("ClickerSection"));
             configureButton = (Button)Window.FindName("ConfigureSecurityButton");
@@ -285,6 +286,7 @@ namespace JustEnoughTools
                 HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
                 Padding = new Thickness(0, 0, requiresScrolling ? 20 : 0, 0)
             };
+            SmoothScrollingController.Attach(scroll);
             layout.Children.Add(scroll);
             var dismiss = new Button
             {

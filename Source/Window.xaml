@@ -12,19 +12,6 @@
                       VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
                       KeyboardNavigation.DirectionalNavigation="Continue" AutomationProperties.Name="Инструменты">
             <StackPanel>
-                <Expander x:Name="WalkieTalkieSection" Margin="{StaticResource Gap.Row}" AutomationProperties.Name="WalkieTalkie">
-                    <Expander.Header>
-                        <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-                            <Grid Width="20" Height="20" Margin="{StaticResource Gap.CategoryIcon}" VerticalAlignment="Center">
-                                <Path Width="14" Height="20" HorizontalAlignment="Right" Stretch="Fill"
-                                      Stroke="{DynamicResource Brush.Text}" StrokeThickness="1.4" StrokeLineJoin="Round" StrokeStartLineCap="Round" StrokeEndLineCap="Round"
-                                      Data="M8 7 C8 4.8 9.8 3 12 3 C14.2 3 16 4.8 16 7 L16 12 C16 14.2 14.2 16 12 16 C9.8 16 8 14.2 8 12 Z M5 11 L5 12 C5 16 8 19 12 19 C16 19 19 16 19 12 L19 11 M12 19 L12 22 M9 22 L15 22"/>
-                            </Grid>
-                            <TextBlock Grid.Column="1" Text="WalkieTalkie" VerticalAlignment="Center"/>
-                        </Grid>
-                    </Expander.Header>
-                    <Grid/>
-                </Expander>
                 <Expander x:Name="ClickerSection" Margin="{StaticResource Gap.Row}" AutomationProperties.Name="Clicker">
                     <Expander.Header>
                         <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
@@ -37,6 +24,32 @@
                         </Grid>
                     </Expander.Header>
                     <Grid/>
+                </Expander>
+                <Expander x:Name="WindowsTweakerSection" Style="{StaticResource TweakerExpander}" Margin="{StaticResource Gap.Row}" AutomationProperties.Name="Настраиваем Windows с Марком">
+                    <Expander.Tag>
+                        <Button x:Name="ApplyAllTweaks" Content="Применить все" IsEnabled="False"
+                                AutomationProperties.Name="Применить все настройки Windows"/>
+                    </Expander.Tag>
+                    <Expander.Header>
+                        <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                            <Grid Width="20" Height="20" Margin="{StaticResource Gap.CategoryIcon}" VerticalAlignment="Center">
+                                <Path Width="20" Height="20" Stretch="Uniform"
+                                      Stroke="{DynamicResource Brush.Text}" StrokeThickness="1.4" StrokeLineJoin="Round" StrokeStartLineCap="Round" StrokeEndLineCap="Round"
+                                      Data="M4 6 L20 6 M4 12 L20 12 M4 18 L20 18 M8 3 L8 9 M16 9 L16 15 M10 15 L10 21"/>
+                            </Grid>
+                            <Grid Grid.Column="1"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                <TextBlock Text="Настраиваем Windows с Марком" VerticalAlignment="Center"/>
+                                <Border Grid.Column="1" Width="{Binding ActualWidth, ElementName=ApplyAllTweaks}" Margin="0,0,18,0"/>
+                            </Grid>
+                        </Grid>
+                    </Expander.Header>
+                    <StackPanel>
+                        <Grid x:Name="TweaksGrid">
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="33"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                            <Border x:Name="TweaksDivider" Grid.Column="1" Grid.RowSpan="7" Width="1" Background="{DynamicResource Brush.Border}"/>
+                        </Grid>
+                        <TextBlock x:Name="TweaksReport" Style="{StaticResource Caption}" TextWrapping="Wrap" Margin="0,8,0,0" Visibility="Collapsed"/>
+                    </StackPanel>
                 </Expander>
                 <Border x:Name="ProtectionCard" Background="{DynamicResource Brush.Surface}"
                         BorderBrush="{DynamicResource Brush.Border}" BorderThickness="{StaticResource Border.Control}"
@@ -63,7 +76,7 @@
                                 <Image x:Name="CurrentIcon" Width="24" Height="24"/>
                             </Button>
                         </StackPanel>
-                        <CheckBox x:Name="AddToStartMenu" Grid.Row="1" Grid.Column="0" Content="Добавить в меню пуск"
+                        <CheckBox x:Name="AddToStartMenu" Grid.Row="1" Grid.Column="0" Content="Добавить в меню Пуск"
                                   IsChecked="True" MinHeight="32" Margin="0,8,16,0"
                                   ToolTip="Создать ярлык .lnk в папке меню «Пуск» текущего пользователя"/>
                         <TextBlock x:Name="ProtectionDescription" Grid.Row="1" Grid.Column="1" Style="{StaticResource Caption}"
@@ -91,11 +104,9 @@
                                   Stroke="{DynamicResource Brush.Text}" StrokeThickness="1.4" StrokeLineJoin="Round" StrokeStartLineCap="Round" StrokeEndLineCap="Round"
                                   Data="M3 5 L21 5 L21 18 L3 18 Z M3 14 L21 14 M12 18 L12 21 M8 21 L16 21 M9 16 L10 16 M12 16 L13 16 M15 16 L16 16"/>
                             <TextBlock x:Name="TaskbarTitle" Grid.Column="1" Text="Исправление панели задач" VerticalAlignment="Center" HorizontalAlignment="Left"
-                                       ToolTip="Режим 1: Главная панель задач и панель задач, в которой открыто окно&#x0A;Режим 2: Панель задач, в которой открыто окно"/>
+                                       ToolTip="Вернуть отображение: &quot;Панель задач, в которой открыто окно&quot;"/>
                         </Grid>
                         <StackPanel Grid.Row="0" Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
-                            <CheckBox x:Name="TaskbarModeSwitch" Style="{StaticResource TaskbarModeSwitchStyle}" IsChecked="False" Margin="0,0,12,0"
-                                      AutomationProperties.Name="Режим исправления панели задач"/>
                             <Button x:Name="ApplyTaskbarButton" Content="Применить" MinWidth="{StaticResource Size.ActionButton}"
                                     Margin="0,0,8,0"
                                     AutomationProperties.Name="Исправить панель задач"/>
@@ -107,7 +118,7 @@
                                 <Image x:Name="TaskbarCurrentIcon" Width="24" Height="24"/>
                             </Button>
                         </StackPanel>
-                        <CheckBox x:Name="TaskbarAddToStartMenu" Grid.Row="1" Grid.Column="0" Content="Добавить в меню пуск"
+                        <CheckBox x:Name="TaskbarAddToStartMenu" Grid.Row="1" Grid.Column="0" Content="Добавить в меню Пуск"
                                   IsChecked="True" MinHeight="32" Margin="0,8,16,0"
                                   ToolTip="Создать ярлык .lnk в папке меню «Пуск» текущего пользователя"/>
                         <Popup x:Name="TaskbarIconPopup" PlacementTarget="{Binding ElementName=TaskbarIconButton}" Placement="Top"

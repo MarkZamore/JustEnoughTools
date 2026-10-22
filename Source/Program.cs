@@ -34,6 +34,7 @@ namespace JustEnoughTools
             }
             int workerExitCode;
             if (SecurityCoordinator.TryRunWorker(args, out workerExitCode)) return workerExitCode;
+            if (Tweaks.TweakWorker.TryRun(args, out workerExitCode)) return workerExitCode;
             // Unknown/private legacy arguments must never launch a window or
             // accidentally become an instruction to change Windows settings.
             if (args.Length != 0) return 2;

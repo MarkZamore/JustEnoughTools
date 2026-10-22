@@ -8,6 +8,9 @@ using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using System.Collections.Generic;
+using System.Linq;
+using JustEnoughTools.Tweaks;
 
 namespace JustEnoughTools.Tests
 {
@@ -25,6 +28,7 @@ namespace JustEnoughTools.Tests
             bool actionInvoked = false;
             int inspections = 0;
             Assembly applicationAssembly = typeof(MainWindowController).Assembly;
+            var tweaks = new FakeTweaks();
             var controller = new MainWindowController(1, applicationAssembly.Location,
                 delegate
                 {
@@ -35,7 +39,7 @@ namespace JustEnoughTools.Tests
                 {
                     inspections++;
                     throw new InvalidOperationException("Offscreen UI measurement must not inspect Windows.");
-                });
+                }, tweaks);
             Window window = controller.Window;
             Grid root = Find<Grid>(window, "RootGrid");
             int passed = 0;
@@ -43,8 +47,11 @@ namespace JustEnoughTools.Tests
             Require(window.Title == "JustEnoughTools", "Unexpected window title.");
             Require(window.Width == 820 && window.Height == 560 && window.MinWidth == 820 && window.MinHeight == 560,
                 "The initial and minimum window size must be 820 x 560 DIP.");
-            AssertEmptyCategory(window, "WalkieTalkieSection");
             AssertEmptyCategory(window, "ClickerSection");
+            Require(!Find<Expander>(window, "WindowsTweakerSection").IsExpanded &&
+                Find<Grid>(window, "TweaksGrid").Children.OfType<Grid>().Count() == 13 &&
+                !Find<Button>(window, "ApplyAllTweaks").IsEnabled,
+                "The tweaker must start collapsed with 13 unavailable-until-checked rows.");
             passed++;
 
             Button configure = Find<Button>(window, "ConfigureSecurityButton");
@@ -65,17 +72,12 @@ namespace JustEnoughTools.Tests
                 Find<UniformGrid>(window, "IconChoices").Children.Count == 3 &&
                 Find<UniformGrid>(window, "TaskbarIconChoices").Children.Count == 3,
                 "Both icon pickers must offer two built-in tiles and a custom ICO.");
-            var taskbarMode = Find<CheckBox>(window, "TaskbarModeSwitch");
-            Require(!taskbarMode.IsThreeState && taskbarMode.IsChecked == false &&
+            Require(window.FindName("TaskbarModeSwitch") == null &&
                 Equals(Find<Button>(window, "ApplyTaskbarButton").Content, "Применить") &&
-                Find<CheckBox>(window, "TaskbarAddToStartMenu").IsChecked == true,
-                "Taskbar repair must offer only two modes and the same export controls.");
-            foreach (bool mode in new[] { true, false })
-            {
-                taskbarMode.IsChecked = mode;
-                Require(((TextBlock)taskbarMode.Template.FindName("SwitchState", taskbarMode)).Text == (mode ? "Режим 2" : "Режим 1"),
-                    "Taskbar modes must never show an unchanged/off state.");
-            }
+                Find<CheckBox>(window, "TaskbarAddToStartMenu").IsChecked == true &&
+                Equals(Find<TextBlock>(window, "TaskbarTitle").ToolTip,
+                    "Вернуть отображение: \"Панель задач, в которой открыто окно\""),
+                "Taskbar repair must expose a single fixed action and describe its final display setting.");
             var securityPreview = Find<Image>(window, "CurrentIcon");
             var taskbarPreview = Find<Image>(window, "TaskbarCurrentIcon");
             ImageSource taskbarBefore = taskbarPreview.Source;
@@ -109,6 +111,95 @@ namespace JustEnoughTools.Tests
             Find<TextBlock>(window, "ProtectionDescription").Visibility = Visibility.Visible;
             MeasureClient(window, root, new Size(820, 560));
             AssertLayout(window, root);
+            passed++;
+
+            typeof(MainWindowController).GetMethod("InspectTweaksAtStartup", BindingFlags.Instance | BindingFlags.NonPublic)
+                .Invoke(controller, new object[] { window, new RoutedEventArgs() });
+            Require(tweaks.Inspections == 1 && Find<Button>(window, "ApplyAllTweaks").IsEnabled,
+                "Startup inspection must enable only confirmed pending tweaks.");
+            var category = Find<Expander>(window, "WindowsTweakerSection");
+            foreach (Size outerSize in new[] { new Size(820, 560), new Size(1100, 760) })
+            {
+                category.IsExpanded = true;
+                MeasureClient(window, root, outerSize);
+                Find<ScrollViewer>(window, "SettingsScroll").ScrollToTop();
+                root.UpdateLayout();
+                Grid cells = Find<Grid>(window, "TweaksGrid");
+                for (int index = 1; index <= 13; index++)
+                {
+                    Grid cell = Find<Grid>(window, "TweakCell" + index);
+                    Require(Grid.GetRow(cell) == (index - 1) / 2 && Grid.GetColumn(cell) == (index - 1) % 2 * 2,
+                        "Tweaks must follow the requested row-major zigzag order.");
+                    AssertInside(Find<Button>(window, "TweakApply" + index), cell, "Each Apply button must fit its own column.");
+                    Require(cell.Children.Count == 2 && cell.Children.OfType<TextBlock>().Count() == 1 && cell.RowDefinitions.Count == 1,
+                        "Tweaks must contain only a title and button, with no status row for any state.");
+                    Require(cell.ToolTip == null &&
+                        ToolTipService.GetShowOnDisabled(Find<Button>(window, "TweakApply" + index)),
+                        "Disabled-button explanations must stay on buttons instead of covering the whole row.");
+                    Require(Find<Button>(window, "TweakApply" + index).ToolTip == null,
+                        "Enabled Apply buttons must not show redundant tooltips.");
+                    if (index == 6) Require(((TextBlock)cell.Children[0]).ToolTip.ToString().Contains("Для шутеров"),
+                        "General hints must remain on setting titles.");
+                    if (index > 2)
+                    {
+                        Rect previous = Bounds(Find<Grid>(window, "TweakCell" + (index - 2)), cells);
+                        Require(Bounds(cell, cells).Top - previous.Bottom <= 6.75,
+                            "Tweaker rows must retain only a compact gap between controls.");
+                    }
+                    if (index % 2 == 0)
+                    {
+                        Grid left = Find<Grid>(window, "TweakCell" + (index - 1));
+                        Rect leftTitle = Bounds((TextBlock)left.Children[0], cells), rightTitle = Bounds((TextBlock)cell.Children[0], cells);
+                        Require(Math.Abs(leftTitle.Top + leftTitle.Height / 2 - rightTitle.Top - rightTitle.Height / 2) < 0.75,
+                            "Titles in both columns must share the same vertical centre, including wrapped titles.");
+                    }
+                }
+                Require(Math.Abs(cells.ColumnDefinitions[0].ActualWidth - cells.ColumnDefinitions[2].ActualWidth) < 0.75 &&
+                    Find<Border>(window, "TweaksDivider").ActualHeight > 0,
+                    "Tweaker columns must be equal and separated by a visible divider.");
+                double applyRight = Bounds(Find<Button>(window, "ApplyAllTweaks"), root).Right;
+                double saveRight = Bounds(Find<Button>(window, "SaveButton"), root).Right;
+                Require(Math.Abs(applyRight - saveRight) < 0.75, "Apply all must align exactly with the Save right edge.");
+                foreach (double scale in new[] { 1.0, 1.25, 1.5, 1.75, 2.0 }) AssertScaledRendering(root, scale);
+                string previewDirectory = Path.GetFullPath(Path.Combine("Tests", "Artifacts", "Tweaker"));
+                Directory.CreateDirectory(previewDirectory);
+                var canvas = (FrameworkElement)root.Parent;
+                var preview = new RenderTargetBitmap((int)Math.Ceiling(canvas.ActualWidth), (int)Math.Ceiling(canvas.ActualHeight), 96, 96, PixelFormats.Pbgra32);
+                var backdrop = new DrawingVisual();
+                using (var drawing = backdrop.RenderOpen())
+                {
+                    var bounds = new Rect(0, 0, canvas.ActualWidth, canvas.ActualHeight);
+                    drawing.DrawRectangle(new SolidColorBrush(Color.FromRgb(32, 32, 32)), null, bounds);
+                    drawing.DrawRectangle(window.Background, null, bounds);
+                }
+                preview.Render(backdrop);
+                preview.Render(canvas);
+                var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(preview));
+                using (var output = File.Create(Path.Combine(previewDirectory, "window-" + outerSize.Width + ".png"))) encoder.Save(output);
+            }
+            category.IsExpanded = false;
+            Find<Button>(window, "ApplyAllTweaks").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            Require(!category.IsExpanded && tweaks.Applied.Count == 13, "Apply all must not toggle the category and must include every row.");
+            Find<Button>(window, "TweakApply6").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            Require(tweaks.Applied.SequenceEqual(new[] { TweakId.Mouse }) && tweaks.Inspections == 1,
+                "Individual actions must stay independent; expanding and applying must not start polling.");
+            Require(Find<TextBlock>(window, "TweaksReport").Visibility == Visibility.Visible,
+                "Tweak results must be displayed inline.");
+            passed++;
+
+            var tweakUi = (TweakUi)typeof(MainWindowController).GetField("tweakUi", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(controller);
+            var mouseRow = tweakUi.Snapshot.Rows.Single(row => row.Id == TweakId.Mouse);
+            mouseRow.Parts[0] = new TweakPart("test", TweakState.Applied);
+            tweakUi.Refresh(true);
+            var mouseCell = Find<Grid>(window, "TweakCell6");
+            Require(!Find<Button>(window, "TweakApply6").IsEnabled &&
+                Find<Button>(window, "TweakApply6").ToolTip.ToString() == "Уже настроено." &&
+                ((TextBlock)mouseCell.Children[0]).ToolTip.ToString() == "Для шутеров." && mouseCell.ToolTip == null,
+                "A disabled button must explain its state while the title retains only the general hint.");
+            mouseRow.Parts[0] = new TweakPart("test", TweakState.Pending);
+            tweakUi.Refresh(true);
+            Require(Find<Button>(window, "TweakApply6").IsEnabled && Find<Button>(window, "TweakApply6").ToolTip == null,
+                "The disabled reason must disappear when the action becomes available.");
             passed++;
 
             MethodInfo createProblemDialog = typeof(MainWindowController).GetMethod("CreateProblemDialog", BindingFlags.Instance | BindingFlags.NonPublic);
@@ -162,6 +253,20 @@ namespace JustEnoughTools.Tests
             AssertInside((Button)content.Children[1], host, "The report acknowledgement button must remain inside the dialog.");
             Require(!dialog.IsLoaded && !dialog.IsVisible, "Measuring a report must not show its window.");
             return client.Height;
+        }
+
+        sealed class FakeTweaks : ITweakService
+        {
+            internal int Inspections;
+            internal List<TweakId> Applied = new List<TweakId>();
+            TweakSnapshot Snapshot()
+            {
+                var result = new TweakSnapshot();
+                foreach (var id in TweakCatalog.All) result.Rows.Add(new TweakRow { Id = id, Parts = new List<TweakPart> { new TweakPart("test", TweakState.Pending) } });
+                return result;
+            }
+            public Task<TweakSnapshot> InspectAsync() { Inspections++; return Task.FromResult(Snapshot()); }
+            public Task<TweakRun> ApplyAsync(TweakId[] ids) { Applied = ids.ToList(); return Task.FromResult(new TweakRun { Snapshot = Snapshot(), Message = "Готово" }); }
         }
 
         static T Find<T>(Window window, string name) where T : FrameworkElement
@@ -234,6 +339,12 @@ namespace JustEnoughTools.Tests
         static void AssertLayout(Window window, Grid root)
         {
             ScrollViewer settings = Find<ScrollViewer>(window, "SettingsScroll");
+            settings.ScrollToTop();
+            settings.UpdateLayout();
+            AssertInside(Find<Expander>(window, "WindowsTweakerSection"), settings,
+                "The Windows tweaker category must fit inside the initial settings viewport.");
+            settings.ScrollToBottom();
+            settings.UpdateLayout();
             Grid footer = Find<Grid>(window, "UpdateArea");
             Button configure = Find<Button>(window, "ConfigureSecurityButton");
             Button save = Find<Button>(window, "SaveButton");
@@ -252,8 +363,8 @@ namespace JustEnoughTools.Tests
             Rect barBounds = Bounds(bar, footer);
             Rect buttonBounds = Bounds(update, footer);
             Require(buttonBounds.Left - barBounds.Right >= 7.5, "The update bar must not overlap the button's 8 DIP gap.");
-            Require(settings.ActualHeight > 0 && settings.ExtentHeight <= settings.ViewportHeight + 0.5,
-                "The initial tools and export controls must fit the settings viewport.");
+            Require(settings.ActualHeight > 0 && settings.VerticalScrollBarVisibility == ScrollBarVisibility.Auto,
+                "The tools must have a usable viewport with automatic scrolling as categories grow.");
             Require(configure.ActualWidth >= 96 && update.ActualWidth >= 95.5 && update.ActualHeight >= 35.5,
                 "Action buttons must retain their intended hit area.");
             Require(Math.Abs(icon.ActualWidth - save.ActualHeight) <= 0.5 &&
@@ -274,7 +385,7 @@ namespace JustEnoughTools.Tests
             Require(Math.Abs(Bounds(startMenu, settings).Left -
                 Bounds(Find<FrameworkElement>(window, "ProtectionIcon"), settings).Left) <= 0.75,
                 "The Start menu checkbox must begin directly under the setting icon, without a title-text indent.");
-            foreach (string name in new[] { "TaskbarModeSwitch", "ApplyTaskbarButton", "TaskbarSaveButton", "TaskbarIconButton", "TaskbarAddToStartMenu" })
+            foreach (string name in new[] { "ApplyTaskbarButton", "TaskbarSaveButton", "TaskbarIconButton", "TaskbarAddToStartMenu" })
                 AssertInside(Find<FrameworkElement>(window, name), settings, "Taskbar controls must fit the minimum viewport: " + name);
             Require(Math.Abs(Bounds(Find<CheckBox>(window, "TaskbarAddToStartMenu"), settings).Left -
                 Bounds(Find<FrameworkElement>(window, "TaskbarSettingIcon"), settings).Left) <= 0.75,

@@ -212,7 +212,7 @@ namespace JustEnoughTools
             return true;
         }
 
-        private static NamedPipeServerStream CreateServer(string pipeName)
+        internal static NamedPipeServerStream CreateServer(string pipeName)
         {
             var security = new PipeSecurity();
             security.SetAccessRuleProtection(true, false);
@@ -227,7 +227,7 @@ namespace JustEnoughTools
                 PipeOptions.Asynchronous, 4096, 4096, security);
         }
 
-        private static async Task WaitForConnectionAsync(NamedPipeServerStream server, Process worker)
+        internal static async Task WaitForConnectionAsync(NamedPipeServerStream server, Process worker)
         {
             using (var timeout = new CancellationTokenSource(ConnectTimeoutMilliseconds))
             using (timeout.Token.Register(() => CloseStreamQuietly(server)))
@@ -244,7 +244,7 @@ namespace JustEnoughTools
             }
         }
 
-        private static async Task<Frame> ReadWithTimeoutAsync(Stream stream, int milliseconds)
+        internal static async Task<Frame> ReadWithTimeoutAsync(Stream stream, int milliseconds)
         {
             using (var timeout = new CancellationTokenSource(milliseconds))
             {
@@ -254,7 +254,7 @@ namespace JustEnoughTools
             }
         }
 
-        private static async Task WriteWithTimeoutAsync(Stream stream, MessageKind kind, byte[] payload)
+        internal static async Task WriteWithTimeoutAsync(Stream stream, MessageKind kind, byte[] payload)
         {
             using (var timeout = new CancellationTokenSource(HandshakeTimeoutMilliseconds))
                 await WriteFrameAsync(stream, kind, payload, timeout.Token).ConfigureAwait(false);
@@ -373,7 +373,7 @@ namespace JustEnoughTools
 
         private static bool SameNonce(byte[] bytes, string nonce) { return SameAscii(bytes, nonce); }
 
-        private static string CreateNonce()
+        internal static string CreateNonce()
         {
             var bytes = new byte[32];
             using (var random = RandomNumberGenerator.Create()) random.GetBytes(bytes);

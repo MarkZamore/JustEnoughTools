@@ -33,7 +33,7 @@ namespace JustEnoughTools.Runner
                 if (action != FixedAction.Security)
                 {
                     if (elevatedInvocation) throw new InvalidOperationException("Для исправления панели задач служебное повышение прав не используется.");
-                    TaskbarResult result = TaskbarRepair.Apply((int)action);
+                    TaskbarResult result = TaskbarRepair.Apply();
                     if (!result.Succeeded) ShowProblems(result.Reason);
                     return result.Succeeded ? 0 : 2;
                 }

@@ -16,6 +16,7 @@ using JustEnoughTools.Updates;
 using JustEnoughTools.Security;
 using JustEnoughTools.Export;
 using JustEnoughTools.Actions;
+using JustEnoughTools.Tweaks;
 
 namespace JustEnoughTools
 {
@@ -33,7 +34,8 @@ namespace JustEnoughTools
         readonly Popup iconPopup;
         readonly SettingExportUi securityExport, taskbarExport;
         readonly Button applyTaskbarButton;
-        readonly CheckBox taskbarSwitch;
+        readonly ITweakService tweakService;
+        readonly TweakUi tweakUi;
         readonly Button updateButton;
         readonly TextBlock updateText;
         readonly TextBlock protectionDescription;
@@ -58,6 +60,10 @@ namespace JustEnoughTools
         public MainWindowController(int releaseNumber, string executablePath,
             Func<Task<SecurityReport>> configureSecurity = null,
             Func<SecuritySnapshot> inspectSecurity = null)
+            : this(releaseNumber, executablePath, configureSecurity, inspectSecurity, null) { }
+
+        internal MainWindowController(int releaseNumber, string executablePath,
+            Func<Task<SecurityReport>> configureSecurity, Func<SecuritySnapshot> inspectSecurity, ITweakService tweakService)
         {
             this.executablePath = executablePath;
             this.configureSecurity = configureSecurity;
@@ -75,16 +81,17 @@ namespace JustEnoughTools
             }
             WindowsTheme.Attach(Window);
             SmoothScrollingController.Attach((ScrollViewer)Window.FindName("SettingsScroll"));
-            ControlMotion.AttachCategory((Expander)Window.FindName("WalkieTalkieSection"));
             ControlMotion.AttachCategory((Expander)Window.FindName("ClickerSection"));
+            ControlMotion.AttachCategory((Expander)Window.FindName("WindowsTweakerSection"));
+            this.tweakService = tweakService ?? new TweakService(executablePath);
+            tweakUi = new TweakUi(Window);
+            tweakUi.Apply = ApplyTweaks;
             configureButton = (Button)Window.FindName("ConfigureSecurityButton");
             securityExport = new SettingExportUi(Window, "", "SecurityIcon", ShowProblem);
             taskbarExport = new SettingExportUi(Window, "Taskbar", "TaskbarIcon", ShowProblem);
             saveButton = securityExport.Save; iconButton = securityExport.Icon;
             addToStartMenu = securityExport.StartMenu; iconPopup = securityExport.Popup;
             applyTaskbarButton = (Button)Window.FindName("ApplyTaskbarButton");
-            taskbarSwitch = (CheckBox)Window.FindName("TaskbarModeSwitch");
-            ControlMotion.AttachTaskbarSwitch(taskbarSwitch);
             applyTaskbarButton.Click += ApplyTaskbar;
             taskbarExport.Save.Click += SaveExecutable;
             updateButton = (Button)Window.FindName("UpdateButton");
@@ -100,6 +107,7 @@ namespace JustEnoughTools
             updates.StatusChanged += OnUpdateStatus;
             Window.Loaded += StartUpdateCheck;
             Window.Loaded += InspectSecurityAtStartup;
+            Window.Loaded += InspectTweaksAtStartup;
             Window.Closing += Closing;
             Window.Closed += Closed;
         }
@@ -112,6 +120,35 @@ namespace JustEnoughTools
         }
 
         public void Show() { Window.Show(); }
+
+        async void InspectTweaksAtStartup(object sender, RoutedEventArgs args)
+        {
+            Window.Loaded -= InspectTweaksAtStartup;
+            try { var snapshot = await tweakService.InspectAsync(); if (!disposed && !closing) tweakUi.Snapshot = snapshot; }
+            catch (Exception error) { if (!disposed && !closing) tweakUi.SetReport("Не удалось проверить настройки: " + error.Message); }
+            if (!disposed && !closing) RefreshButtons();
+        }
+
+        async void ApplyTweaks(TweakId[] ids)
+        {
+            if (configuring || saving || closing || tweakUi.Snapshot == null) return;
+            configuring = true;
+            iconPopup.IsOpen = false; taskbarExport.Popup.IsOpen = false;
+            tweakUi.SetReport("Выполняются настройки…");
+            RefreshButtons();
+            try
+            {
+                var result = await tweakService.ApplyAsync(ids);
+                tweakUi.Snapshot = result.Snapshot;
+                tweakUi.SetReport(result.Format());
+            }
+            catch (Exception error) { tweakUi.SetReport(error.Message); }
+            finally
+            {
+                configuring = false; RefreshButtons();
+                if (closeAfterAction) Window.Close();
+            }
+        }
 
         async void InspectSecurityAtStartup(object sender, RoutedEventArgs args)
         {
@@ -191,13 +228,13 @@ namespace JustEnoughTools
         void RefreshButtons()
         {
             bool available = !configuring && !saving && !closing;
+            tweakUi.Refresh(available);
             configureButton.IsEnabled = configureSecurity != null && available && securityChecked &&
                 !checkingSecurity && securityNeedsChanges;
             saveButton.IsEnabled = available;
             iconButton.IsEnabled = available;
             addToStartMenu.IsEnabled = available;
             applyTaskbarButton.IsEnabled = available;
-            taskbarSwitch.IsEnabled = available;
             taskbarExport.Save.IsEnabled = available;
             taskbarExport.Icon.IsEnabled = available;
             taskbarExport.StartMenu.IsEnabled = available;
@@ -307,7 +344,6 @@ namespace JustEnoughTools
         async void ApplyTaskbar(object sender, RoutedEventArgs args)
         {
             if (configuring || saving || closing) return;
-            int mode = taskbarSwitch.IsChecked == true ? 2 : 1;
             configuring = true;
             iconPopup.IsOpen = false; taskbarExport.Popup.IsOpen = false;
             RefreshButtons();
@@ -320,14 +356,19 @@ namespace JustEnoughTools
                         bool acquired;
                         try { acquired = mutex.WaitOne(0); } catch (AbandonedMutexException) { acquired = true; }
                         if (!acquired) throw new InvalidOperationException("Другая операция приложения ещё выполняется.");
-                        try { return TaskbarRepair.Apply(mode); }
+                        try { return TaskbarRepair.Apply(); }
                         finally { mutex.ReleaseMutex(); }
                     }
                 });
                 if (!result.Succeeded) ShowProblem(result.Reason);
             }
             catch (Exception error) { ShowProblem(error.Message); }
-            finally { configuring = false; RefreshButtons(); if (closeAfterAction) Window.Close(); }
+            finally
+            {
+                try { tweakUi.Snapshot = await tweakService.InspectAsync(); }
+                catch { }
+                configuring = false; RefreshButtons(); if (closeAfterAction) Window.Close();
+            }
         }
 
         void SaveExecutable(object sender, RoutedEventArgs args)
@@ -335,7 +376,7 @@ namespace JustEnoughTools
             if (configuring || saving || closing) return;
             bool taskbar = ReferenceEquals(sender, taskbarExport.Save);
             SettingExportUi export = taskbar ? taskbarExport : securityExport;
-            FixedAction action = taskbar ? (taskbarSwitch.IsChecked == true ? FixedAction.TaskbarMode2 : FixedAction.TaskbarMode1) : FixedAction.Security;
+            FixedAction action = taskbar ? FixedAction.TaskbarMode2 : FixedAction.Security;
             saving = true;
             iconPopup.IsOpen = false; taskbarExport.Popup.IsOpen = false;
             RefreshButtons();

@@ -106,6 +106,24 @@ namespace JustEnoughTools.Updates
             catch (AbandonedMutexException) { return true; }
         }
 
+        internal static bool IsScopeBusy(string executablePath, string scope)
+        {
+            // Check only this row. Another category or a short admission-gate
+            // holder must not make an unrelated row appear to be running.
+            if (Array.IndexOf(Scopes, scope) < 0) throw new ArgumentOutOfRangeException("scope");
+            try
+            {
+                using (Mutex mutex = OpenScope(executablePath, scope))
+                {
+                    if (!Take(mutex)) return true;
+                    mutex.ReleaseMutex();
+                    return false;
+                }
+            }
+            catch (Exception ex) when (ex is UnauthorizedAccessException || ex is SecurityException || ex is IOException || ex is WaitHandleCannotBeOpenedException)
+            { return true; }
+        }
+
         internal static bool IsBusy(string executablePath)
         {
             try

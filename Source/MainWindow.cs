@@ -87,6 +87,7 @@ namespace JustEnoughTools
             ControlMotion.AttachCategory((Expander)Window.FindName("ClickerSection"));
             ControlMotion.AttachCategory((Expander)Window.FindName("WindowsTweakerSection"));
             this.tweakService = tweakService ?? new TweakService(executablePath);
+            this.tweakService.StateChanged += OnTweakServiceStateChanged;
             tweakUi = new TweakUi(Window);
             tweakUi.Apply = ApplyTweaks;
             configureButton = (Button)Window.FindName("ConfigureSecurityButton");
@@ -144,6 +145,7 @@ namespace JustEnoughTools
             try
             {
                 var result = await tweakService.ApplyAsync(requested);
+                if (disposed || closing) return;
                 // Concurrent actions return independent snapshots. A completion
                 // must not replace newer states of rows owned by another action.
                 if (result.Snapshot != null)
@@ -154,12 +156,15 @@ namespace JustEnoughTools
                     }
                 tweakUi.SetReport(result.Format());
             }
-            catch (Exception error) { tweakUi.SetReport(error.Message); }
+            catch (Exception error) { if (!disposed && !closing) tweakUi.SetReport(error.Message); }
             finally
             {
                 foreach (var id in requested) busyTweaks.Remove(id);
-                RefreshButtons();
-                CloseWhenIdle();
+                if (!disposed && !closing)
+                {
+                    RefreshButtons();
+                    CloseWhenIdle();
+                }
             }
         }
 
@@ -168,9 +173,27 @@ namespace JustEnoughTools
             get { return busyTweaks.Count != 0 || securityBusy || taskbarBusy || securitySaving || taskbarSaving; }
         }
 
+        bool HasForegroundOperations
+        {
+            get { return tweakService.HasForegroundWork || securityBusy || taskbarBusy || securitySaving || taskbarSaving; }
+        }
+
+        void OnTweakServiceStateChanged()
+        {
+            if (disposed || Window.Dispatcher.HasShutdownStarted) return;
+            Action changed = delegate
+            {
+                if (disposed || closing) return;
+                RefreshButtons();
+                CloseWhenIdle();
+            };
+            if (Window.Dispatcher.CheckAccess()) changed();
+            else Window.Dispatcher.BeginInvoke(changed);
+        }
+
         void CloseWhenIdle()
         {
-            if (closeAfterAction && !HasActiveOperations) Window.Close();
+            if (!disposed && !closing && closeAfterAction && !HasForegroundOperations) Window.Close();
         }
 
         async void InspectSecurityAtStartup(object sender, RoutedEventArgs args)
@@ -435,7 +458,7 @@ namespace JustEnoughTools
             if (closeAllowed) return;
             args.Cancel = true;
             if (closing) return;
-            if (HasActiveOperations)
+            if (HasForegroundOperations)
             {
                 closeAfterAction = true;
                 RefreshButtons();
@@ -450,7 +473,12 @@ namespace JustEnoughTools
                 if (updateTask != null) await updateTask;
             }
             catch { }
-            if (updates.HasPreparedUpdate && (!installScheduleFailed || restartAfterUpdate))
+            // A detached worker owns the same EXE and its operation leases.
+            // Leave the prepared package untouched for a later safe install.
+            bool detachedWork = busyTweaks.Count != 0;
+            try { detachedWork |= UpdateService.IsOperationInProgress(executablePath); }
+            catch { detachedWork = true; }
+            if (!detachedWork && updates.HasPreparedUpdate && (!installScheduleFailed || restartAfterUpdate))
             {
                 string error = null;
                 bool scheduled;
@@ -473,6 +501,7 @@ namespace JustEnoughTools
         void Closed(object sender, EventArgs args)
         {
             disposed = true;
+            tweakService.StateChanged -= OnTweakServiceStateChanged;
             if (shortcutMaintenance != null) shortcutMaintenance.Dispose();
             updates.StatusChanged -= OnUpdateStatus;
             updates.Dispose();

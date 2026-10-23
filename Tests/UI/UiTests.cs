@@ -275,6 +275,21 @@ namespace JustEnoughTools.Tests
 
             Require(!window.IsVisible && !window.IsLoaded && !actionInvoked && inspections == 0,
                 "UI tests must not show the window, start maintenance/network checks, or invoke security actions.");
+            Find<Button>(window, "TweakApply12").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            var foreground = typeof(MainWindowController).GetProperty("HasForegroundOperations", BindingFlags.Instance | BindingFlags.NonPublic);
+            Require((bool)foreground.GetValue(controller, null),
+                "The window must await preferences and worker authentication before allowing a background close.");
+            tweaks.Detach();
+            Require(!(bool)foreground.GetValue(controller, null) && !Find<Button>(window, "TweakApply12").IsEnabled &&
+                Find<Button>(window, "TweakApply1").IsEnabled,
+                "An acknowledged detached worker must allow closing while only its own row stays blocked.");
+            string reportBeforeClosing = Find<TextBlock>(window, "TweaksReport").Text;
+            typeof(MainWindowController).GetMethod("Closed", BindingFlags.Instance | BindingFlags.NonPublic)
+                .Invoke(controller, new object[] { window, EventArgs.Empty });
+            tweaks.Complete(3);
+            Require(Find<TextBlock>(window, "TweaksReport").Text == reportBeforeClosing,
+                "Late completion after the controller closes must not update disposed UI controls.");
+            passed += 3;
             // Do not call Close: its production handler may schedule a prepared
             // update. This unshown window has no active task or dispatcher loop.
             return passed;
@@ -316,6 +331,15 @@ namespace JustEnoughTools.Tests
             internal int Inspections;
             internal List<TweakId> Applied = new List<TweakId>();
             internal bool Hold;
+            internal bool Detached;
+            public bool HasForegroundWork { get { return !Detached && Pending.Any(item => !item.Item2.Task.IsCompleted); } }
+            public event Action StateChanged;
+            internal void Detach()
+            {
+                Detached = true;
+                var changed = StateChanged;
+                if (changed != null) changed();
+            }
             internal readonly List<Tuple<TweakId[], TaskCompletionSource<TweakRun>>> Pending = new List<Tuple<TweakId[], TaskCompletionSource<TweakRun>>>();
             internal void Complete(int index)
             {

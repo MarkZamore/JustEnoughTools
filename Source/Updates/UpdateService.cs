@@ -82,6 +82,9 @@ namespace JustEnoughTools.Updates
         internal static Mutex CreateOperationScopeMutex(string executablePath, string scope)
         { return OperationLease.OpenScope(executablePath, scope); }
 
+        public static bool IsOperationScopeInProgress(string executablePath, string scope)
+        { return OperationLease.IsScopeBusy(executablePath, scope); }
+
         public static bool IsOperationInProgress(string executablePath) { return OperationLease.IsBusy(executablePath); }
 
         // No network calls here: a prepared package is applied before the UI is

@@ -144,6 +144,8 @@ namespace JustEnoughTools.Tests
                 var security = fixture.HoldScope("Security");
                 var taskbar = fixture.HoldScope("Taskbar");
                 Check(UpdateService.IsOperationInProgress(fixture.Target), "Concurrent scoped operations were not observed.");
+                Check(UpdateService.IsOperationScopeInProgress(fixture.Target, "Tweak1"), "A running row was not observed after reopening.");
+                Check(!UpdateService.IsOperationScopeInProgress(fixture.Target, "Tweak3"), "An independent row was incorrectly marked running.");
                 bool duplicateRejected = false;
                 try { using (UpdateService.AcquireOperationLease(fixture.Target, "Tweak1")) { } }
                 catch (InvalidOperationException) { duplicateRejected = true; }

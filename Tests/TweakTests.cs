@@ -15,6 +15,13 @@ namespace JustEnoughTools.Tests
         public static int RunAll()
         {
             passed = 0;
+            var repeated=new TweakRun();
+            repeated.Results.Add(new TweakRow{Id=TweakId.WindowsUpdate,Parts=new List<TweakPart>{
+                new TweakPart("user",TweakState.Failed,reason:"Эта операция уже выполняется"),
+                new TweakPart("prepare",TweakState.Failed,reason:"Эта операция уже выполняется"),
+                new TweakPart("install",TweakState.Failed,reason:"Эта операция уже выполняется")}});
+            Check(repeated.Format().Split(new[]{"Эта операция уже выполняется"},StringSplitOptions.None).Length==2,
+                "Repeated phase errors must appear once in the category report.");
             Check(WindowsTweakPlatform.BitLockerState(8, true) == 0 && WindowsTweakPlatform.BitLockerState(8, false) == -1,
                 "A verified pre-provisioned encrypted volume needs decryption; an unverified interpretation must stay unknown.");
             Check(WindowsTweakPlatform.BitLockerState(null, true) == -1 && WindowsTweakPlatform.BitLockerState(0, true) == -1 &&

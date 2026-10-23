@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
@@ -9,6 +9,8 @@ namespace JustEnoughTools.Tweaks
 {
     internal interface ITweakService
     {
+        bool HasForegroundWork { get; }
+        event Action StateChanged;
         Task<TweakSnapshot> InspectAsync();
         Task<TweakRun> ApplyAsync(TweakId[] ids);
     }
@@ -32,7 +34,7 @@ namespace JustEnoughTools.Tweaks
                 foreach (var part in parts.Where(p => p.State == TweakState.Failed || p.Key == "indexing" || p.Key == "search-updates" || p.Key == "bitlocker"))
                     if (!string.IsNullOrWhiteSpace(part.Reason)) summary.Add(part.Reason);
                 if (summary.Count == 0) summary.Add("изменения не требуются");
-                lines.Add(TweakCatalog.Titles[(int)group.Key - 1] + ": " + string.Join("; ", summary) + ".");
+                lines.Add(TweakCatalog.Titles[(int)group.Key - 1] + ": " + string.Join("; ", summary.Distinct()) + ".");
             }
             return string.Join("\n", lines);
         }
@@ -40,15 +42,41 @@ namespace JustEnoughTools.Tweaks
     internal sealed class TweakService : ITweakService
     {
         readonly TweakEngine engine;
-        readonly Func<TweakId[], List<TweakRow>> elevate;
+        readonly Func<TweakId[], Action, List<TweakRow>> elevate;
         readonly string executable;
         readonly object sync = new object();
         readonly HashSet<TweakId> running = new HashSet<TweakId>();
+        int foregroundRuns;
+        public bool HasForegroundWork { get { lock (sync) return foregroundRuns != 0; } }
+        public event Action StateChanged;
         internal TweakService(string executable) : this(executable,
-            new TweakEngine(new WindowsTweakBackend(new WindowsTweakPlatform())), ids => TweakWorker.Apply(ids)) { }
+            new TweakEngine(new WindowsTweakBackend(new WindowsTweakPlatform())), (ids, started) => TweakWorker.Apply(ids, started)) { }
         internal TweakService(string executable, TweakEngine engine, Func<TweakId[], List<TweakRow>> elevate)
+            : this(executable, engine, (ids, started) => elevate(ids)) { }
+        internal TweakService(string executable, TweakEngine engine, Func<TweakId[], Action, List<TweakRow>> elevate)
         { this.executable = executable; this.engine = engine; this.elevate = elevate; }
-        public Task<TweakSnapshot> InspectAsync() { return Task.Run(() => engine.InspectAll()); }
+        void NotifyStateChanged()
+        {
+            var changed = StateChanged;
+            if (changed == null) return;
+            foreach (Action subscriber in changed.GetInvocationList())
+                try { subscriber(); } catch { }
+        }
+        TweakSnapshot InspectSnapshot()
+        {
+            var snapshot = engine.InspectAll();
+            // Kernel leases survive the UI process. A newly opened window can
+            // identify an existing worker without files, registry or polling.
+            foreach (var row in snapshot.Rows)
+                if (UpdateService.IsOperationScopeInProgress(executable, "Tweak" + (int)row.Id))
+                    foreach (var part in row.Parts.Where(part => part.State == TweakState.Pending))
+                    {
+                        part.State = TweakState.Running;
+                        part.Reason = "Операция уже выполняется.";
+                    }
+            return snapshot;
+        }
+        public Task<TweakSnapshot> InspectAsync() { return Task.Run(() => InspectSnapshot()); }
         public Task<TweakRun> ApplyAsync(TweakId[] ids)
         {
             if (ids == null || ids.Length == 0 || ids.Length > 13 || ids.Distinct().Count() != ids.Length || ids.Any(id => !TweakCatalog.IsValid(id)))
@@ -57,7 +85,18 @@ namespace JustEnoughTools.Tweaks
             {
                 if(ids.Any(running.Contains))throw new InvalidOperationException("Эта настройка уже выполняется.");
                 foreach(var id in ids)running.Add(id);
+                foregroundRuns++;
             }
+            NotifyStateChanged();
+            int foreground = 1;
+            Action backgroundStarted = () =>
+            {
+                // Only an authenticated worker which already owns its leases
+                // can detach this request from the lifetime of the UI process.
+                if (Interlocked.Exchange(ref foreground, 0) == 0) return;
+                lock (sync) foregroundRuns--;
+                NotifyStateChanged();
+            };
             return Task.Run(() =>
             {
                 var run = new TweakRun();
@@ -81,11 +120,11 @@ namespace JustEnoughTools.Tweaks
                     var administrators=ids.Where(id=>engine.Inspect(id).NeedsAdministrator).ToArray();
                     if(administrators.Length!=0)
                     {
-                        try {run.Results.AddRange(elevate(administrators));}
+                        try {run.Results.AddRange(elevate(administrators, backgroundStarted));}
                         catch(Exception error){run.Message=error.Message;}
                     }
                     engine.RememberCompleted(run.Results);
-                    run.Snapshot=engine.InspectAll();
+                    run.Snapshot=InspectSnapshot();
                     foreach(var result in run.Results)
                         foreach(var part in result.Parts.Where(p=>p.State==TweakState.Deferred))
                         {
@@ -94,7 +133,12 @@ namespace JustEnoughTools.Tweaks
                         }
                     return run;
                 }
-                finally {lock(sync)foreach(var id in ids)running.Remove(id);}
+                finally
+                {
+                    backgroundStarted();
+                    lock (sync) foreach (var id in ids) running.Remove(id);
+                    NotifyStateChanged();
+                }
             });
         }
     }

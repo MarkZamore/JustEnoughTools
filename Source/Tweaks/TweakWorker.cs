@@ -25,10 +25,9 @@ namespace JustEnoughTools.Tweaks
         { using (var identity = WindowsIdentity.GetCurrent()) return new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator); }
         internal static bool MachineAction(TweakId id)
         { return id == TweakId.Indexing || id == TweakId.BitLocker || id == TweakId.WindowsUpdate || id == TweakId.Startup; }
-        internal static List<TweakRow> Apply(TweakId[] ids)
+        internal static List<TweakRow> Apply(TweakId[] ids, Action started = null)
         {
             ValidateIds(ids);
-            if (IsAdministrator()) return Run(ids);
             string pipe = "JustEnoughTools.Tweaks." + Guid.NewGuid().ToString("N"), nonce = SecurityCoordinator.CreateNonce();
             using (var parent = Process.GetCurrentProcess())
             using (var server = SecurityCoordinator.CreateServer(pipe))
@@ -36,7 +35,7 @@ namespace JustEnoughTools.Tweaks
             using (var scopeHandles = KeepScopeHandles(parent.MainModule.FileName, ids))
             {
                 var start = SecurityCoordinator.CreateWorkerStartInfo(parent.MainModule.FileName,
-                    Argument + " " + pipe + " " + nonce + " " + parent.Id.ToString(CultureInfo.InvariantCulture) + " " + parent.StartTime.ToUniversalTime().Ticks.ToString(CultureInfo.InvariantCulture), false, true);
+                    Argument + " " + pipe + " " + nonce + " " + parent.Id.ToString(CultureInfo.InvariantCulture) + " " + parent.StartTime.ToUniversalTime().Ticks.ToString(CultureInfo.InvariantCulture), IsAdministrator(), true);
                 Process child;
                 try { child = Process.Start(start); }
                 catch (System.ComponentModel.Win32Exception error) when (error.NativeErrorCode == 1223)
@@ -52,6 +51,11 @@ namespace JustEnoughTools.Tweaks
                     if (hello.Kind != SecurityCoordinator.MessageKind.Hello || !Equal(hello.Payload, nonce)) throw new InvalidDataException("Неверное подтверждение рабочего процесса.");
                     SecurityCoordinator.WriteWithTimeoutAsync(server, SecurityCoordinator.MessageKind.Accepted,
                         EncodeRequest(ids)).GetAwaiter().GetResult();
+                    var acknowledgement = SecurityCoordinator.ReadWithTimeoutAsync(server, 15000).GetAwaiter().GetResult();
+                    ValidateStarted(acknowledgement.Kind, acknowledgement.Payload);
+                    if (started != null) started();
+                    // The authenticated worker now owns every eligible lease and
+                    // continues independently if this application exits.
                     // Disk processing and conversion can legitimately take hours.
                     // EOF is a failure, never a successful completion.
                     var result = SecurityCoordinator.ReadFrameAsync(server, CancellationToken.None).GetAwaiter().GetResult();
@@ -99,8 +103,10 @@ namespace JustEnoughTools.Tweaks
                         var accepted = SecurityCoordinator.ReadWithTimeoutAsync(pipe, 10000).GetAwaiter().GetResult();
                         if (accepted.Kind != SecurityCoordinator.MessageKind.Accepted) throw new InvalidDataException("Запрос не подтверждён.");
                         var ids = DecodeRequest(accepted.Payload);
-                        var rows = Run(ids);
-                        SecurityCoordinator.WriteWithTimeoutAsync(pipe, SecurityCoordinator.MessageKind.Result, EncodeResult(rows)).GetAwaiter().GetResult();
+                        var rows = Run(ids, () => SecurityCoordinator.WriteWithTimeoutAsync(pipe,
+                            SecurityCoordinator.MessageKind.Accepted, EncodeStarted()).GetAwaiter().GetResult());
+                        DeliverResult(() => SecurityCoordinator.WriteWithTimeoutAsync(pipe,
+                            SecurityCoordinator.MessageKind.Result, EncodeResult(rows)).GetAwaiter().GetResult());
                     }
                 }
             }
@@ -108,21 +114,70 @@ namespace JustEnoughTools.Tweaks
             return true;
         }
         internal enum Phase { All, PrepareUpdates, InstallUpdates }
-        static List<TweakRow> Run(TweakId[] ids)
+        internal static byte[] EncodeStarted() { return Encoding.ASCII.GetBytes(Protocol + "STARTED"); }
+        internal static void ValidateStarted(SecurityCoordinator.MessageKind kind, byte[] payload)
+        {
+            if (kind != SecurityCoordinator.MessageKind.Accepted || payload == null || !Equal(payload, Protocol + "STARTED"))
+                throw new InvalidDataException("Рабочий процесс не подтвердил запуск задач.");
+        }
+        internal static void DeliverResult(Action deliver)
+        {
+            // Once work was accepted, losing the UI must not cancel it or turn
+            // a completed installation into a failed worker process.
+            try { deliver(); }
+            catch (IOException) { }
+            catch (ObjectDisposedException) { }
+        }
+        sealed class Reservations : IDisposable
+        {
+            internal readonly List<IDisposable> Leases = new List<IDisposable>();
+            public void Dispose() { for (int i = Leases.Count - 1; i >= 0; i--) Leases[i].Dispose(); }
+        }
+        static List<TweakRow> Run(TweakId[] ids, Action started)
+        {
+            string executable;
+            using (var current = Process.GetCurrentProcess()) executable = current.MainModule.FileName;
+            return RunReservedBatch(ids, id =>
+            {
+                var leases = new Reservations();
+                try
+                {
+                    leases.Leases.Add(UpdateService.AcquireOperationLease(executable, "Tweak" + (int)id));
+                    leases.Leases.Add(TweakActionLease.Take(id));
+                    return leases;
+                }
+                catch { leases.Dispose(); throw; }
+            }, started, (id, phase) =>
+            {
+                var engine = new TweakEngine(new WindowsTweakBackend(new WindowsTweakPlatform(true)));
+                return engine.Apply(new[] { id }, TweakScope.Administrator,
+                    deferUpdateSearch: phase == Phase.PrepareUpdates, updateSearchOnly: phase == Phase.InstallUpdates);
+            });
+        }
+        internal static List<TweakRow> RunReservedBatch(TweakId[] ids, Func<TweakId, IDisposable> reserve,
+            Action started, Func<TweakId, Phase, List<TweakRow>> execute)
         {
             ValidateIds(ids);
-            string executable;
-            using(var current=Process.GetCurrentProcess())executable=current.MainModule.FileName;
-            return RunBatch(ids,(id,phase)=>
+            using (var reservations = new Reservations())
             {
-                using(UpdateService.AcquireOperationLease(executable,"Tweak"+(int)id))
-                using(TweakActionLease.Take(id))
+                var eligible = new List<TweakId>(); var rows = new List<TweakRow>();
+                // This entry thread acquires and releases mutex ownership. Worker
+                // tasks never reacquire these leases on another thread.
+                foreach (var id in ids)
                 {
-                    var engine=new TweakEngine(new WindowsTweakBackend(new WindowsTweakPlatform(true)));
-                    return engine.Apply(new[]{id},TweakScope.Administrator,
-                        deferUpdateSearch:phase==Phase.PrepareUpdates,updateSearchOnly:phase==Phase.InstallUpdates);
+                    try { reservations.Leases.Add(reserve(id)); eligible.Add(id); }
+                    catch (Exception error)
+                    {
+                        rows.Add(new TweakRow { Id = id, Parts = new List<TweakPart> {
+                            new TweakPart("operation-reservation", TweakState.Failed, true, error.Message) } });
+                    }
                 }
-            });
+                // No mutation precedes the handshake. A failed acknowledgement
+                // releases reservations, without starting any system changes.
+                started();
+                if (eligible.Count != 0) rows.AddRange(RunBatch(eligible.ToArray(), execute));
+                return rows;
+            }
         }
         internal static List<TweakRow> RunBatch(TweakId[] ids,Func<TweakId,Phase,List<TweakRow>> execute)
         {

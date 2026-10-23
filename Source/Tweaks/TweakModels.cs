@@ -48,7 +48,7 @@ namespace JustEnoughTools.Tweaks
         {
             if (id == TweakId.Indexing) return "Диск C:. Для SSD лишнее — он и так быстрый. Недоступные файлы пропускаются.";
             if (id == TweakId.Mouse) return "Для шутеров. Скорость движения указателя сохраняется.";
-            if (id == TweakId.WindowsUpdate) return "Скачать и установить все доступные обновления, включая необязательные. Без автоматической перезагрузки.";
+            if (id == TweakId.WindowsUpdate) return "Запустить проверку средствами Windows. При недоступности — резервная загрузка и установка, включая необязательные. Без автоматической перезагрузки.";
             if (id == TweakId.BitLocker) return "Полностью расшифровать C:. PowerShell показывает процент и закрывается по завершении.";
             return Titles[(int)id - 1];
         }
@@ -68,7 +68,7 @@ namespace JustEnoughTools.Tweaks
         volatile bool updatesCompleted;
         internal void RememberCompleted(IEnumerable<TweakRow> results)
         {
-            if(results.Any(r=>r.Id==TweakId.WindowsUpdate&&r.Parts.Any(p=>p.Key=="search-updates"&&p.State==TweakState.Applied)))updatesCompleted=true;
+            if(results.Any(r=>r.Id==TweakId.WindowsUpdate&&r.Parts.Any(p=>p.Key=="search-updates"&&p.State==TweakState.Applied&&p.Administrator)))updatesCompleted=true;
         }
         internal TweakEngine(ITweakBackend backend) { this.backend = backend; }
         internal TweakRow Inspect(TweakId id)
@@ -99,7 +99,7 @@ namespace JustEnoughTools.Tweaks
                 var row = new TweakRow { Id = id };
                 foreach (var part in Inspect(id).Parts)
                 {
-                    if(deferUpdateSearch&&id==TweakId.WindowsUpdate&&part.Key=="search-updates")continue;
+                    if(deferUpdateSearch&&id==TweakId.WindowsUpdate&&part.Key=="search-updates"&&part.Administrator)continue;
                     if(updateSearchOnly&&(id!=TweakId.WindowsUpdate||part.Key!="search-updates"))continue;
                     if (part.State != TweakState.Pending || part.Administrator != (scope == TweakScope.Administrator)) continue;
                     try { row.Parts.Add(backend.Apply(id, part.Key)); }

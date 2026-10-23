@@ -16,6 +16,9 @@ namespace JustEnoughTools.Tweaks
     {
         readonly string build;
         readonly bool machineOnly;
+        readonly WindowsUpdateDispatch updates = new WindowsUpdateDispatch(
+            NativeWindowsUpdateScan.IsAvailable, NativeWindowsUpdateScan.Read, NativeWindowsUpdateScan.Start);
+        bool PreferNativeUpdates { get { return !machineOnly && Certified("orchestrator-scan"); } }
         internal WindowsTweakPlatform() : this(false) { }
         internal WindowsTweakPlatform(bool machineOnly)
         {
@@ -100,7 +103,8 @@ namespace JustEnoughTools.Tweaks
                     var appbar = new AppBar { Size = (uint)Marshal.SizeOf(typeof(AppBar)), Window = taskbar }; return (SHAppBarMessage(4, ref appbar).ToUInt64() & 1) != 0 ? 1 : 0;
                 case "theme": return !File.Exists(DarkThemePath) ? 2 : ThemeIsDark() ? 1 : 0;
                 case "microsoft-update": return UpdateManaged ? 2 : MicrosoftUpdateState();
-                case "search-updates": return Type.GetTypeFromProgID("Microsoft.Update.Session", false) == null ? 2 : 0;
+                case "search-updates": return updates.Read(PreferNativeUpdates,
+                    () => Type.GetTypeFromProgID("Microsoft.Update.Session", false) == null ? 2 : 0);
                 default: throw new ArgumentOutOfRangeException(nameof(key));
             }
         }
@@ -129,7 +133,7 @@ namespace JustEnoughTools.Tweaks
                     ulong state = SHAppBarMessage(4, ref appbar).ToUInt64(); appbar.Parameter = new IntPtr(unchecked((long)(state | 1)));
                     SHAppBarMessage(10, ref appbar); return "Автоскрытие панели задач включено.";
                 case "theme": ApplyDarkTheme(); return "Применена тема «Windows (тёмная)».";
-                case "search-updates": return SearchUpdates();
+                case "search-updates": return PreferNativeUpdates && !updates.NativeFailed ? updates.Start() : SearchUpdates();
                 case "microsoft-update": RegisterMicrosoftUpdate(); return MicrosoftUpdateState() == 3 ? "Регистрация Microsoft Update ожидает связи со службой." : "Получение обновлений продуктов Microsoft включено.";
                 default: throw new ArgumentOutOfRangeException(nameof(key));
             }
@@ -316,6 +320,42 @@ try {
         }
     }
 
+    internal sealed class WindowsUpdateDispatch
+    {
+        readonly Func<bool> available;
+        readonly Func<WindowsUpdateScanSnapshot> read;
+        readonly Func<string> start;
+        internal bool NativeFailed { get; private set; }
+        internal WindowsUpdateDispatch(Func<bool> available, Func<WindowsUpdateScanSnapshot> read, Func<string> start)
+        { this.available = available; this.read = read; this.start = start; }
+        internal int Read(bool preferNative, Func<int> fallback)
+        {
+            if (preferNative && !NativeFailed)
+            {
+                try
+                {
+                    if (available())
+                    {
+                        var state = read();
+                        if (state == null) throw new InvalidOperationException("Не удалось проверить состояние обновлений Windows.");
+                        return state.IsScanning || state.IsWorking ? 3 : 4;
+                    }
+                }
+                catch { NativeFailed = true; }
+            }
+            return fallback();
+        }
+        internal string Start()
+        {
+            try { return start(); }
+            catch (Exception error)
+            {
+                NativeFailed = true;
+                throw new InvalidOperationException("Не удалось запустить проверку средствами Windows; будет использован резервный способ с правами администратора.", error);
+            }
+        }
+    }
+
     // WUA runs synchronously on the tweak's worker. Only this fixed operation is
     // exposed to the administrative worker; no update IDs or commands cross IPC.
     internal interface IWindowsUpdateItem
@@ -491,7 +531,7 @@ try {
         };
         static readonly HashSet<string> Verified9711 = new HashSet<string>(StringComparer.Ordinal)
         {
-            "theme", "startup", "bitlocker-preprovisioned", "clipboard:EnableClipboardHistory", "new-start:ShowRecentList",
+            "theme", "startup", "bitlocker-preprovisioned", "orchestrator-scan", "clipboard:EnableClipboardHistory", "new-start:ShowRecentList",
             "new-start:ShowPinnedSection", "new-start:ShowRecentSection", "new-start:ShowAllAppsSection",
             "new-start:StartMenuSize", "new-start:HideUserInformation",
             "start:Start_TrackDocs", "start:Start_IrisRecommendations", "start:Start_AccountNotifications", "start:VisiblePlaces",

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Windows;
@@ -65,6 +65,8 @@ namespace JustEnoughTools.Tweaks
             if (!available) return "Выполняется другая операция.";
             string reason = null;
             if (row.CanApply) return null;
+            else if (row.Id == TweakId.WindowsUpdate && row.Parts.Any(p => p.Key == "search-updates" && p.State == TweakState.Applied && !p.Administrator))
+                reason = "Проверка передана Windows.";
             else if (row.Parts.Any(p => p.State == TweakState.Running)) reason = "Операция уже выполняется.";
             else if (row.Parts.Any(p => p.State == TweakState.Failed)) reason = "Не удалось применить настройку.";
             else if (row.Parts.Any(p => p.State == TweakState.Unknown)) reason = "Не удалось проверить состояние.";
@@ -88,6 +90,8 @@ namespace JustEnoughTools.Tweaks
         {
             string hint = id == TweakId.Indexing ? "Диск C:. Для SSD обычно не нужно." :
                 id == TweakId.BitLocker ? "Полная расшифровка C:." : id == TweakId.Mouse ? "Для шутеров." : null;
+            if (id == TweakId.WindowsUpdate && row != null && row.Parts.Any(p => p.Key == "search-updates" && !p.Administrator))
+                hint = "Статус — в Центре обновления Windows.";
             if (row != null && row.CanApply && row.Parts.Any(p => p.State == TweakState.Unknown || p.State == TweakState.Unavailable))
                 return (hint == null ? "" : hint + " ") + "Недоступные параметры будут пропущены.";
             return hint;

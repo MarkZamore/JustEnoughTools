@@ -42,6 +42,9 @@ namespace JustEnoughTools.Tests
                 .All(capability => TweakCompatibility.Allows("26300.9711", capability) && !TweakCompatibility.Allows("26300.9457", capability)) &&
                 TweakCompatibility.Allows("26300.9711", "battery:IsBatteryPercentageEnabled"),
                 "Approved host evidence must enable only confirmed build and capability mappings.");
+            var nativeTip=new TweakRow{Id=TweakId.WindowsUpdate,Parts=new List<TweakPart>{new TweakPart("search-updates",TweakState.Applied)}};
+            Check(TweakUi.BlockedTooltip(nativeTip,true)=="Проверка передана Windows."&&TweakUi.SettingHint(TweakId.WindowsUpdate,nativeTip).Contains("Центре обновления"),
+                "Native launch tooltips must describe handoff, not completed installation.");
             var tipRow = new TweakRow { Id = TweakId.Clock };
             tipRow.Parts.Add(new TweakPart("long-internal-key", TweakState.Unavailable, reason: "Внутренняя поднастройка: не проверено для этой сборки Windows. " + new string('x', 500)));
             string tooltip = TweakUi.BlockedTooltip(tipRow, true);
@@ -109,6 +112,34 @@ namespace JustEnoughTools.Tests
             windows.Apply(TweakId.WindowsUpdate, "search-updates");
             windows.Apply(TweakId.WindowsUpdate, "search-updates");
             Check(platform.Searches == 1 && windows.Inspect(TweakId.WindowsUpdate).Single(p => p.Key == "search-updates").State == TweakState.Applied, "Windows Update search runs once per session after success.");
+            var nativePlatform = new FakePlatform { NativeSearchState = 4 };
+            var nativeBackend = new WindowsTweakBackend(nativePlatform);
+            var nativeParts = nativeBackend.Inspect(TweakId.WindowsUpdate);
+            Check(nativeParts.Single(p => p.Key == "search-updates").State == TweakState.Pending &&
+                !nativeParts.Single(p => p.Key == "search-updates").Administrator && !nativeParts.Any(p => p.Key == "microsoft-update"),
+                "Native scan is a user action and must not trigger manual Microsoft Update registration.");
+            var nativeEngine = new TweakEngine(nativeBackend);
+            var nativeRows = nativeEngine.Apply(new[] { TweakId.WindowsUpdate }, TweakScope.User, true);
+            nativeEngine.RememberCompleted(nativeRows);
+            Check(nativePlatform.Searches == 1 && nativeRows.SelectMany(r => r.Parts).Any(p => p.Key == "search-updates" && p.Reason == "Проверка запущена средствами Windows."),
+                "Native scan must run in the quick user phase and describe only an accepted launch.");
+            Check(!nativeEngine.Inspect(TweakId.WindowsUpdate).NeedsAdministrator &&
+                nativeEngine.Inspect(TweakId.WindowsUpdate).Parts.Single(p => p.Key == "search-updates").Reason == "Проверка запущена средствами Windows.",
+                "A native accepted launch cannot be relabelled installed or sent to the elevated WUA fallback.");
+            nativeEngine.Apply(new[] { TweakId.WindowsUpdate }, TweakScope.User, true);
+            Check(nativePlatform.Searches == 1, "An accepted native scan cannot be repeated in this app session.");
+            var scanning = new WindowsTweakBackend(new FakePlatform { NativeSearchState = 3 });
+            var scanningPart = scanning.Inspect(TweakId.WindowsUpdate).Single(p => p.Key == "search-updates");
+            Check(scanningPart.State == TweakState.Running && !scanningPart.Administrator,
+                "An active Windows scan or install must not offer simultaneous WUA execution.");
+            var failedNativePlatform = new FakePlatform { NativeSearchState = 4, FailNativeScan = true };
+            var failedNative = new WindowsTweakBackend(failedNativePlatform);
+            MustFail(() => failedNative.Apply(TweakId.WindowsUpdate, "search-updates"), "A rejected native request must not be reported accepted.");
+            var fallbackParts = failedNative.Inspect(TweakId.WindowsUpdate);
+            Check(fallbackParts.Single(p => p.Key == "search-updates").Administrator && fallbackParts.Any(p => p.Key == "microsoft-update"),
+                "A failed native launch restores administrative WUA and manual Microsoft Update registration.");
+            Check(TweakCompatibility.Allows("26300.9711", "orchestrator-scan") &&
+                !TweakCompatibility.Allows("26300.9457", "orchestrator-scan"), "Native scan must be enabled only on its verified build.");
             platform.CertifiedValue = false;
             Check(windows.Inspect(TweakId.Start).All(p => p.State == TweakState.Unavailable), "Unverified registry adapters must never become available.");
             int storedCount = platform.Values.Count;
@@ -241,7 +272,8 @@ namespace JustEnoughTools.Tests
         {
             internal bool BrokerCertifiedValue=true;
             internal bool CertifiedValue = true, UpdateManagedValue, Lie, HasBatteryValue, TrayReadFails, IgnoreTrayWrites;
-            internal int Searches, Writes, TrayWrites, TrayReads, PreferenceWrites;
+            internal int Searches, Writes, TrayWrites, TrayReads, PreferenceWrites, NativeSearchState;
+            internal bool FailNativeScan;
             internal Dictionary<TrayPreferenceKind, TrayPreferenceSnapshot> TrayStates = new Dictionary<TrayPreferenceKind, TrayPreferenceSnapshot>();
             internal Dictionary<WindowsPreferenceId,WindowsPreferenceSnapshot> Preferences=new Dictionary<WindowsPreferenceId,WindowsPreferenceSnapshot>();
             internal Dictionary<string, RegistryDatum> Values = new Dictionary<string, RegistryDatum>();
@@ -263,8 +295,11 @@ namespace JustEnoughTools.Tests
                 return new WindowsPreferenceSnapshot(value,true,true,false,false);
             }
             public void SetWindowsPreference(WindowsPreferenceId id,object value){PreferenceWrites++;if(!Lie)Preferences[id]=new WindowsPreferenceSnapshot(value,true,true,false,false,ReadWindowsPreference(id).Choices);}
-            public int ReadNative(string key) { return applied.Contains(key) ? 1 : 0; }
-            public string ApplyNative(string key) { if (!Lie) applied.Add(key); if (key == "search-updates") Searches++; return "test"; }
+            public int ReadNative(string key) { if(key=="search-updates" && NativeSearchState!=0)return NativeSearchState; return applied.Contains(key) ? 1 : 0; }
+            public string ApplyNative(string key) {
+                if (key == "search-updates" && FailNativeScan) { NativeSearchState = 0; throw new InvalidOperationException("native rejected"); }
+                if (!Lie) applied.Add(key); if (key == "search-updates") Searches++; return "test";
+            }
             public IReadOnlyList<TweakPart> InspectStartup() { return new[] { new TweakPart("startup", TweakState.Applied) }; }
             public TweakPart ApplyStartup(string key) { throw new InvalidOperationException("No startup action expected."); }
         }

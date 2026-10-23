@@ -36,6 +36,18 @@ namespace JustEnoughTools.Tests
             check(result.Installed == 1 && result.Errors.Count == 1, "Thrown installer errors are isolated per update.");
             result=WindowsUpdateOperation.Run(new FakeBatch(new FakeItem(new string('x',10000)){FailEula=true}));
             check(result.Errors.Count==1&&result.Describe().Length<8192,"Update reports must fit the authenticated IPC result limit.");
+            int scanCalls = 0, fallbackCalls = 0;
+            var dispatch = new WindowsUpdateDispatch(() => true, () => new WindowsUpdateScanSnapshot(), () => { scanCalls++; return "started"; });
+            check(dispatch.Read(true, () => { fallbackCalls++; return 0; }) == 4 && fallbackCalls == 0, "A supported native scan is preferred without touching WUA.");
+            check(dispatch.Start() == "started" && scanCalls == 1 && !dispatch.NativeFailed, "Native launch success stays on the native route.");
+            check(dispatch.Read(false, () => { fallbackCalls++; return 0; }) == 0 && fallbackCalls == 1, "Machine-only workers always select WUA without a second native scan.");
+            var busyDispatch = new WindowsUpdateDispatch(() => true, () => new WindowsUpdateScanSnapshot { IsWorking = true }, () => "unused");
+            check(busyDispatch.Read(true, () => 0) == 3, "Native working state must suppress a conflicting installation request.");
+            var rejected = new WindowsUpdateDispatch(() => true, () => new WindowsUpdateScanSnapshot(), () => { throw new InvalidOperationException("rejected"); });
+            bool nativeFailed = false; try { rejected.Start(); } catch (InvalidOperationException) { nativeFailed = true; }
+            check(nativeFailed && rejected.NativeFailed && rejected.Read(true, () => 0) == 0, "Only a failed native launch enables the administrative fallback.");
+            var unavailable = new WindowsUpdateDispatch(() => false, () => { throw new InvalidOperationException("must not read"); }, () => "unused");
+            check(unavailable.Read(true, () => 0) == 0, "Unavailable native API selects WUA without reading an unavailable adapter.");
             return count;
         }
         sealed class FakeItem : IWindowsUpdateItem

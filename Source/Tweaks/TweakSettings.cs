@@ -215,7 +215,7 @@ namespace JustEnoughTools.Tweaks
     internal sealed class WindowsTweakBackend : ITweakBackend
     {
         readonly ITweakPlatform system;
-        volatile bool searched;
+        volatile bool searched, nativeStarted;
         internal WindowsTweakBackend(ITweakPlatform system) { this.system = system; }
         IEnumerable<TweakSetting> EffectiveSettings(TweakId id)
         {
@@ -257,6 +257,8 @@ namespace JustEnoughTools.Tweaks
             }
             foreach (var key in NativeKeys(id))
             {
+                if(id == TweakId.WindowsUpdate && key == "microsoft-update" &&
+                    (nativeStarted || system.ReadNative("search-updates") >= 3)) continue;
                 if(result.Any(p=>p.Key==key))continue;
                 try
                 {
@@ -282,9 +284,15 @@ namespace JustEnoughTools.Tweaks
                     if (key == "search-updates")
                     {
                         if(system.UpdateManaged){result.Add(new TweakPart(key,TweakState.Unavailable,reason:"Обновления управляются политикой Windows."));continue;}
-                        int available = searched ? 1 : system.ReadNative(key);
-                        result.Add(new TweakPart(key, searched ? TweakState.Applied : available == 2 ? TweakState.Unavailable : available < 0 ? TweakState.Unknown : TweakState.Pending, true,
-                            reason: searched ? "Обновления обработаны в этом запуске." : available == 2 ? "Поиск обновлений недоступен." : available < 0 ? "Не удалось проверить доступность поиска обновлений." : "Скачать и установить все доступные обновления, включая необязательные.")); continue;
+                        int available = nativeStarted ? 4 : searched ? 1 : system.ReadNative(key);
+                        bool native = available == 3 || available == 4;
+                        var updateState = nativeStarted || searched ? TweakState.Applied : available == 3 ? TweakState.Running :
+                            available == 2 ? TweakState.Unavailable : available < 0 ? TweakState.Unknown : TweakState.Pending;
+                        result.Add(new TweakPart(key, updateState, !native,
+                            reason: nativeStarted ? "Проверка запущена средствами Windows." : searched ? "Обновления обработаны в этом запуске." :
+                            available == 3 ? "Windows уже проверяет или применяет обновления." : available == 4 ? "Запустить проверку средствами Windows." :
+                            available == 2 ? "Поиск обновлений недоступен." : available < 0 ? "Не удалось проверить доступность поиска обновлений." :
+                            "Скачать и установить доступные обновления резервным способом, включая необязательные.")); continue;
                     }
                     int value = system.ReadNative(key);
                     TweakState state = value < 0 ? TweakState.Unknown : value == 1 ? TweakState.Applied : value == 2 ? TweakState.Unavailable : value == 3 ? TweakState.Running : TweakState.Pending;
@@ -425,7 +433,15 @@ namespace JustEnoughTools.Tweaks
                 message = "Настройка применена через брокер Windows.";
             }
             else message = system.ApplyNative(part);
-            if (part == "search-updates") searched = true;
+            if (part == "search-updates")
+            {
+                if (!before.Administrator)
+                {
+                    nativeStarted = true;
+                    return new TweakPart(part, TweakState.Applied, false, "Проверка запущена средствами Windows.");
+                }
+                searched = true;
+            }
             if (part == "bitlocker")
             {
                 var state = Inspect(id).Single(p => p.Key == part).State;

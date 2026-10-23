@@ -1,6 +1,7 @@
-using System;
+﻿using System;
 using System.Diagnostics;
 using System.IO;
+using Microsoft.Win32;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
@@ -24,6 +25,12 @@ namespace WindowsPreferences
     internal static class NativeWindowsPreferences
     {
         internal static IWindowsPreferenceSession Open(WindowsPreferenceId id) {WindowsPreferenceCatalog.Get(id);return new Handle(id);}
+        internal static bool IsConfirmedTaskbarMode(object stored,object value,string[] choices)
+        {
+            return stored is int && (int)stored>=0 && (int)stored<=2 && choices!=null && choices.Length==3 &&
+                !string.IsNullOrEmpty(choices[0]) && !string.IsNullOrEmpty(choices[1]) && !string.IsNullOrEmpty(choices[2]) &&
+                choices[0]!=choices[1] && choices[0]!=choices[2] && choices[1]!=choices[2] && Equals(value,choices[(int)stored]);
+        }
         sealed class Handle:IWindowsPreferenceSession
         {
             readonly WindowsPreferenceId id;
@@ -65,13 +72,22 @@ namespace WindowsPreferences
                     int result = RoInitialize(1);
                     if (result >= 0) initialized = true;
                     else if (result != unchecked((int)0x80010106)) Check(result); // RPC_E_CHANGED_MODE: already initialized STA.
-                    brokerName = String("SystemSettings.DataModel.SettingsBroker");
-                    Check(RoActivateInstance(brokerName, out raw));
-                    broker = Query(raw, BrokerId);
-                    Release(ref raw);
-                    // ISettingsBroker.GetSettingsDatabase: current user, never the
-                    // system database or another user's setting model.
-                    Check(Method<GetObject>(broker, 6)(broker, out raw));
+                    // The remote broker model accepts this list into its cache
+                    // without calling the taskbar handler. Activate the same
+                    // current-user database locally for the verified mode action.
+                    if (kind == WindowsPreferenceId.TaskbarMultiMonitorMode)
+                    {
+                        brokerName = String("SystemSettings.DataModel.SettingsDatabase");
+                        Check(RoActivateInstance(brokerName, out raw));
+                    }
+                    else
+                    {
+                        brokerName = String("SystemSettings.DataModel.SettingsBroker");
+                        Check(RoActivateInstance(brokerName, out raw));
+                        broker = Query(raw, BrokerId);
+                        Release(ref raw);
+                        Check(Method<GetObject>(broker, 6)(broker, out raw));
+                    }
                     database = Query(raw, DatabaseId);
                     Release(ref raw);
                     settingName = String(id);
@@ -93,8 +109,20 @@ namespace WindowsPreferences
             internal WindowsPreferenceSnapshot Read()
             {
                 var state=ReadCore();
-                return new WindowsPreferenceSnapshot(state.Value,state.Applicable,state.Enabled,state.Managed,state.Updating,
-                    definition.PropertyType==12 && state.Applicable ? ReadChoices() : new string[0]);
+                var choices=definition.PropertyType==12 && state.Applicable ? ReadChoices() : new string[0];
+                if(kind==WindowsPreferenceId.TaskbarMultiMonitorMode && state.Applicable && !NativeModeMatches(state.Value,choices))
+                    throw new IOException("Windows не подтвердила системный режим панели задач.");
+                return new WindowsPreferenceSnapshot(state.Value,state.Applicable,state.Enabled,state.Managed,state.Updating,choices);
+            }
+
+            static bool NativeModeMatches(object value,string[] choices)
+            {
+                if(choices.Length!=3)return false;
+                using(var key=Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced"))
+                {
+                    object stored=key==null?null:key.GetValue("MMTaskbarMode",null);
+                    return IsConfirmedTaskbarMode(stored,value,choices);
+                }
             }
 
             sealed class Snapshot
@@ -211,7 +239,8 @@ namespace WindowsPreferences
                     using (var observer = new Session(kind)) after = observer.ReadCore();
                     if (!after.Applicable || !after.Enabled || after.Managed)
                         throw new IOException("Windows could not confirm the setting in this context.");
-                    if (!after.Updating && Equals(after.Value, value))
+                    if (!after.Updating && Equals(after.Value, value) &&
+                        (kind!=WindowsPreferenceId.TaskbarMultiMonitorMode || NativeModeMatches(value,ReadChoices())))
                     {
                         if (matchingSince < 0) matchingSince = elapsed.ElapsedMilliseconds;
                         matchingViews++;

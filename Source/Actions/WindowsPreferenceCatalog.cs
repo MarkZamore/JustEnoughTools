@@ -94,7 +94,7 @@ namespace WindowsPreferences
             b(WindowsPreferenceId.TaskbarBadges,"DesktopTaskbar_Badging");
             b(WindowsPreferenceId.TaskbarFlashing,"DesktopTaskbar_Flashing");
             b(WindowsPreferenceId.TaskbarMultiMonitor,"DesktopTaskbar_MultiMon");
-            i(WindowsPreferenceId.TaskbarMultiMonitorMode,"DesktopTaskbar_MultiMonTaskbarMode",2);
+            s(WindowsPreferenceId.TaskbarMultiMonitorMode,"Taskbar_MultiMonTaskbarMode");
             i(WindowsPreferenceId.TaskbarGrouping,"DesktopTaskbar_GroupingMode",2);
             i(WindowsPreferenceId.TaskbarSecondaryGrouping,"DesktopTaskbar_SecondaryMonitorsGroupingMode",2);
             b(WindowsPreferenceId.TaskbarShareWindow,"DesktopTaskbar_Sn");

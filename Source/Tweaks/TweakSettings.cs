@@ -16,6 +16,7 @@ namespace JustEnoughTools.Tweaks
         internal bool Administrator;
         internal WindowsPreferenceId? Preference;
         internal object PreferenceTarget;
+        internal int? PreferenceChoice;
         internal TweakSetting Legacy() {var copy=(TweakSetting)MemberwiseClone();copy.Preference=null;copy.Administrator=Id==TweakId.WindowsUpdate;return copy;}
     }
 
@@ -78,8 +79,9 @@ namespace JustEnoughTools.Tweaks
             if(BrokerMapping.TryGetValue(name,out preference)) {
                 setting.Preference=preference;
                 int target=Convert.ToInt32(value);
+                if(WindowsPreferenceCatalog.Get(preference).PropertyType==12)setting.PreferenceChoice=target;
                 setting.PreferenceTarget=WindowsPreferenceCatalog.Get(preference).PropertyType==11?(object)(target!=0):
-                    name=="MMTaskbarMode"||name=="TaskbarLocation"?0:name=="IconSizePreference"?1:target;
+                    name=="TaskbarLocation"?0:name=="IconSizePreference"?1:target;
             }
             return setting;
         }
@@ -300,11 +302,19 @@ namespace JustEnoughTools.Tweaks
             var state=system.ReadWindowsPreference(setting.Preference.Value);
             if(!state.IsApplicable)return new TweakPart(setting.Key,TweakState.Unavailable,reason:"Настройка недоступна в этой системе.");
             WindowsPreferenceCatalog.Get(setting.Preference.Value).Validate(state.Value);
-            var result=state.IsUpdating?TweakState.Running:Equals(state.Value,setting.PreferenceTarget)?TweakState.Applied:
+            var result=state.IsUpdating?TweakState.Running:Equals(state.Value,PreferenceValue(setting,state))?TweakState.Applied:
                 state.IsSetByGroupPolicy||!state.IsEnabled?TweakState.Unavailable:TweakState.Pending;
             return new TweakPart(setting.Key,result,setting.Administrator,
                 state.IsSetByGroupPolicy?"Настройка управляется политикой Windows.":result==TweakState.Applied?"Уже настроено.":
                 result==TweakState.Running?"Настройка изменяется Windows.":result==TweakState.Pending?"Можно применить.":"Настройка временно недоступна.");
+        }
+        static object PreferenceValue(TweakSetting setting,WindowsPreferenceSnapshot state)
+        {
+            if(!setting.PreferenceChoice.HasValue)return setting.PreferenceTarget;
+            if(state.Choices.Length!=3||state.Choices.Any(string.IsNullOrEmpty)||state.Choices.Distinct(StringComparer.Ordinal).Count()!=3||
+                !(state.Value is string)||!state.Choices.Contains((string)state.Value))
+                throw new InvalidOperationException("Windows вернула неподтверждённый список режимов панели задач.");
+            return state.Choices[setting.PreferenceChoice.Value];
         }
         bool BlockedClipboard()
         {
@@ -436,7 +446,7 @@ namespace JustEnoughTools.Tweaks
         TweakPart Store(TweakSetting setting)
         {
                 if(setting.Preference.HasValue) {
-                    system.SetWindowsPreference(setting.Preference.Value,setting.PreferenceTarget);
+                    system.SetWindowsPreference(setting.Preference.Value,PreferenceValue(setting,system.ReadWindowsPreference(setting.Preference.Value)));
                     var verified=InspectPreference(setting);
                     if(verified.State!=TweakState.Applied)throw new InvalidOperationException("Windows не подтвердила изменение настройки.");
                     return new TweakPart(setting.Key,TweakState.Applied,setting.Administrator,"Настройка применена и проверена.");

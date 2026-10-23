@@ -161,6 +161,9 @@ namespace JustEnoughTools.Tests
             Check(trayBackend.Inspect(TweakId.Taskbar).Single(part => part.Key == "PenWorkspaceButtonDesiredVisibility").State == TweakState.Applied,
                 "An absent legacy pen value must not override the broker's actual enabled hardware-dependent default.");
 
+            var modePlatform=new FakePlatform();var modeBackend=new WindowsTweakBackend(modePlatform);
+            Check(modeBackend.Apply(TweakId.Taskbar,"MMTaskbarMode").State==TweakState.Applied&&Equals(modePlatform.ReadWindowsPreference(WindowsPreferenceId.TaskbarMultiMonitorMode).Value,"window"),
+                "Taskbar mode must use the current string model and its third choice, not an index from the deprecated handler.");
             var legacyPlatform=new FakePlatform {BrokerCertifiedValue=false};var legacyBackend=new WindowsTweakBackend(legacyPlatform);
             Check(legacyBackend.Apply(TweakId.Keyboard,"keyboard-delay").State==TweakState.Applied&&legacyBackend.Apply(TweakId.Mouse,"mouse").State==TweakState.Applied,
                 "Documented SPI settings must remain available when the new broker mapping is not certified.");
@@ -185,7 +188,7 @@ namespace JustEnoughTools.Tests
             brokerPlatform.Preferences[WindowsPreferenceId.StartSettings]=new WindowsPreferenceSnapshot(null,false,false,false,false);
             Check(brokerBackend.Inspect(TweakId.Start).Single(p=>p.Key=="place-StartSettings").State==TweakState.Unavailable,
                 "An unavailable child must be skipped independently of other Start folders.");
-            foreach(var setting in TweakSettings.All.Where(s=>s.Preference.HasValue))WindowsPreferenceCatalog.Get(setting.Preference.Value).Validate(setting.PreferenceTarget);
+            foreach(var setting in TweakSettings.All.Where(s=>s.Preference.HasValue&&!s.PreferenceChoice.HasValue))WindowsPreferenceCatalog.Get(setting.Preference.Value).Validate(setting.PreferenceTarget);
             Check(TweakSettings.All.Where(s=>s.Id==TweakId.WindowsUpdate).All(s=>!s.Administrator),"User update broker settings must stay in the original user process.");
             Check(!TweakCompatibility.Allows("26300.9711","broker:9999")&&!TweakCompatibility.Allows("26300.9712","broker:Widgets"),"Unknown identifiers/builds must not gain broker certification.");
 
@@ -246,11 +249,13 @@ namespace JustEnoughTools.Tests
             public void SetTrayPreference(TrayPreferenceKind kind, bool value) { TrayWrites++; if (!IgnoreTrayWrites) TrayStates[kind] = new TrayPreferenceSnapshot(value, true, true, false, false); }
             public WindowsPreferenceSnapshot ReadWindowsPreference(WindowsPreferenceId id) {
                 WindowsPreferenceSnapshot state;if(Preferences.TryGetValue(id,out state))return state;
-                var definition=WindowsPreferenceCatalog.Get(id);object value=definition.PropertyType==5?(object)(id==WindowsPreferenceId.KeyboardDelay?3u:0u):definition.PropertyType==4?(object)0:
+                var definition=WindowsPreferenceCatalog.Get(id);
+                if(definition.PropertyType==12)return new WindowsPreferenceSnapshot("all",true,true,false,false,new[]{"all","main","window"});
+                object value=definition.PropertyType==5?(object)(id==WindowsPreferenceId.KeyboardDelay?3u:0u):definition.PropertyType==4?(object)0:
                     id==WindowsPreferenceId.MouseAcceleration||id==WindowsPreferenceId.Widgets?(object)true:false;
                 return new WindowsPreferenceSnapshot(value,true,true,false,false);
             }
-            public void SetWindowsPreference(WindowsPreferenceId id,object value){PreferenceWrites++;if(!Lie)Preferences[id]=new WindowsPreferenceSnapshot(value,true,true,false,false);}
+            public void SetWindowsPreference(WindowsPreferenceId id,object value){PreferenceWrites++;if(!Lie)Preferences[id]=new WindowsPreferenceSnapshot(value,true,true,false,false,ReadWindowsPreference(id).Choices);}
             public int ReadNative(string key) { return applied.Contains(key) ? 1 : 0; }
             public string ApplyNative(string key) { if (!Lie) applied.Add(key); if (key == "search-updates") Searches++; return "test"; }
             public IReadOnlyList<TweakPart> InspectStartup() { return new[] { new TweakPart("startup", TweakState.Applied) }; }

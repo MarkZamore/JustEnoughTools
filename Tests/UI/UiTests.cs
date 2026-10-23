@@ -202,6 +202,57 @@ namespace JustEnoughTools.Tests
                 "The disabled reason must disappear when the action becomes available.");
             passed++;
 
+            // Hold fake tasks open to exercise real event-handler lifetimes.
+            // No native action, process, or Windows preference is invoked.
+            tweaks.Hold = true;
+            Find<Button>(window, "TweakApply1").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            Require(!Find<Button>(window, "TweakApply1").IsEnabled &&
+                Find<Button>(window, "TweakApply1").ToolTip.ToString() == "Операция уже выполняется." &&
+                Find<Button>(window, "TweakApply6").IsEnabled && Find<Button>(window, "ApplyAllTweaks").IsEnabled &&
+                Find<Button>(window, "ApplyTaskbarButton").IsEnabled && save.IsEnabled && icon.IsEnabled &&
+                Find<Button>(window, "TaskbarSaveButton").IsEnabled && Find<Expander>(window, "ClickerSection").IsEnabled,
+                "A long tweak must lock only its own button, leaving categories and independent actions usable.");
+            Find<Button>(window, "TweakApply6").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            Require(tweaks.Pending.Count == 2 && !Find<Button>(window, "TweakApply6").IsEnabled &&
+                Find<Button>(window, "TweakApply3").IsEnabled,
+                "An independent tweak must start while another is running.");
+            Find<Button>(window, "ApplyAllTweaks").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            Require(tweaks.Pending.Count == 3 && tweaks.Applied.Count == 11 &&
+                !tweaks.Applied.Contains(TweakId.Indexing) && !tweaks.Applied.Contains(TweakId.Mouse) &&
+                !Find<Button>(window, "ApplyAllTweaks").IsEnabled && Find<Button>(window, "ApplyTaskbarButton").IsEnabled,
+                "Apply all must start only the remaining pending rows and never duplicate a running action.");
+            tweaks.Complete(1);
+            Require(!Find<Button>(window, "TweakApply1").IsEnabled && !Find<Button>(window, "TweakApply6").IsEnabled,
+                "Completing one action must not unlock another running action or its own already-applied row.");
+            tweaks.Complete(0);
+            Require(Find<Button>(window, "TweakApply6").ToolTip.ToString() == "Уже настроено." &&
+                !Find<Button>(window, "TweakApply3").IsEnabled,
+                "A stale completion snapshot must not overwrite another action's completed or running rows.");
+            tweaks.Complete(2);
+            Require(!Find<Button>(window, "ApplyAllTweaks").IsEnabled && save.IsEnabled &&
+                Find<Button>(window, "ApplyTaskbarButton").IsEnabled,
+                "Completed actions must preserve their states and leave unrelated settings available.");
+            passed += 6;
+
+            tweakUi.Snapshot = tweaks.FreshSnapshot();
+            SetControllerFlag(controller, "securityChecked", true);
+            SetControllerFlag(controller, "securityNeedsChanges", true);
+            foreach (string busyFlag in new[] { "securityBusy", "taskbarBusy", "securitySaving", "taskbarSaving" })
+            {
+                SetControllerFlag(controller, busyFlag, true);
+                typeof(MainWindowController).GetMethod("RefreshButtons", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(controller, null);
+                Require(configure.IsEnabled == (busyFlag != "securityBusy") &&
+                    Find<Button>(window, "ApplyTaskbarButton").IsEnabled == (busyFlag != "taskbarBusy") &&
+                    save.IsEnabled == (busyFlag != "securitySaving") &&
+                    Find<Button>(window, "TaskbarSaveButton").IsEnabled == (busyFlag != "taskbarSaving") &&
+                    Find<Button>(window, "TweakApply1").IsEnabled && Find<Button>(window, "ApplyAllTweaks").IsEnabled &&
+                    Find<Expander>(window, "ClickerSection").IsEnabled,
+                    "Each action/export must disable only its own controls, never independent categories or actions: " + busyFlag);
+                SetControllerFlag(controller, busyFlag, false);
+                passed++;
+            }
+            typeof(MainWindowController).GetMethod("RefreshButtons", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(controller, null);
+
             MethodInfo createProblemDialog = typeof(MainWindowController).GetMethod("CreateProblemDialog", BindingFlags.Instance | BindingFlags.NonPublic);
             Require(createProblemDialog != null, "A problem report must use the content-sized dialog.");
             Window shortDialog = (Window)createProblemDialog.Invoke(controller,
@@ -227,6 +278,11 @@ namespace JustEnoughTools.Tests
             // Do not call Close: its production handler may schedule a prepared
             // update. This unshown window has no active task or dispatcher loop.
             return passed;
+        }
+
+        static void SetControllerFlag(MainWindowController controller, string name, bool value)
+        {
+            typeof(MainWindowController).GetField(name, BindingFlags.Instance | BindingFlags.NonPublic).SetValue(controller, value);
         }
 
         static double MeasureProblemDialog(Window dialog, out ScrollViewer details)
@@ -259,6 +315,17 @@ namespace JustEnoughTools.Tests
         {
             internal int Inspections;
             internal List<TweakId> Applied = new List<TweakId>();
+            internal bool Hold;
+            internal readonly List<Tuple<TweakId[], TaskCompletionSource<TweakRun>>> Pending = new List<Tuple<TweakId[], TaskCompletionSource<TweakRun>>>();
+            internal void Complete(int index)
+            {
+                var pending = Pending[index];
+                var snapshot = Snapshot();
+                foreach (var row in snapshot.Rows.Where(row => pending.Item1.Contains(row.Id)))
+                    row.Parts[0].State = TweakState.Applied;
+                pending.Item2.SetResult(new TweakRun { Snapshot = snapshot, Message = "Готово" });
+            }
+            internal TweakSnapshot FreshSnapshot() { return Snapshot(); }
             TweakSnapshot Snapshot()
             {
                 var result = new TweakSnapshot();
@@ -266,7 +333,14 @@ namespace JustEnoughTools.Tests
                 return result;
             }
             public Task<TweakSnapshot> InspectAsync() { Inspections++; return Task.FromResult(Snapshot()); }
-            public Task<TweakRun> ApplyAsync(TweakId[] ids) { Applied = ids.ToList(); return Task.FromResult(new TweakRun { Snapshot = Snapshot(), Message = "Готово" }); }
+            public Task<TweakRun> ApplyAsync(TweakId[] ids)
+            {
+                Applied = ids.ToList();
+                if (!Hold) return Task.FromResult(new TweakRun { Snapshot = Snapshot(), Message = "Готово" });
+                var completion = new TaskCompletionSource<TweakRun>();
+                Pending.Add(Tuple.Create(ids, completion));
+                return completion.Task;
+            }
         }
 
         static T Find<T>(Window window, string name) where T : FrameworkElement

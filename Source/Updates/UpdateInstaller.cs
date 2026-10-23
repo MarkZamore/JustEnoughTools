@@ -2,6 +2,7 @@ using System;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
+using System.IO.Compression;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -35,6 +36,9 @@ namespace JustEnoughTools.Updates
                     if (!restart || RequestRestartIfActive(executable)) return true;
                     throw new InvalidOperationException("Установщик не подтвердил запрос перезапуска.");
                 }
+
+                if (UpdateService.IsOperationInProgress(executable))
+                    throw new InvalidOperationException("Дождитесь завершения текущей операции. Обновление сохранено.");
 
                 // Keep the shared object alive until the helper has opened it.
                 // Its ownership, rather than a separate busy check, serializes
@@ -208,7 +212,20 @@ namespace JustEnoughTools.Updates
         {
             script = Regex.Replace(script, @"(?m)^[ \t]+", string.Empty);
             script = Regex.Replace(script, @"(?m)^#[^\r\n]*(?:\r?\n|$)", string.Empty);
-            return Convert.ToBase64String(Encoding.Unicode.GetBytes(script.Replace("\r\n", "\n")));
+            byte[] content = Encoding.UTF8.GetBytes(script.Replace("\r\n", "\n"));
+            byte[] compressed;
+            using (var output = new MemoryStream())
+            {
+                using (var gzip = new GZipStream(output, CompressionMode.Compress, true))
+                    gzip.Write(content, 0, content.Length);
+                compressed = output.ToArray();
+            }
+            // Transport only: the fixed helper is expanded in memory. This
+            // avoids Windows' command-line limit without a temporary script.
+            string transport = "$m=New-Object IO.MemoryStream(,[Convert]::FromBase64String('" +
+                Convert.ToBase64String(compressed) + "'));$g=New-Object IO.Compression.GZipStream($m,[IO.Compression.CompressionMode]::Decompress);" +
+                "$r=New-Object IO.StreamReader($g,[Text.Encoding]::UTF8);try{$s=$r.ReadToEnd()}finally{$r.Dispose();$g.Dispose();$m.Dispose()};&([ScriptBlock]::Create($s))";
+            return Convert.ToBase64String(Encoding.Unicode.GetBytes(transport));
         }
 
         private static string BuildScript(string executable, string package, string names, string handoff,
@@ -217,6 +234,7 @@ namespace JustEnoughTools.Updates
         {
             return HelperScript.Replace("@TARGET@", Encoded(executable)).Replace("@PACKAGE@", Encoded(package))
                 .Replace("@OPERATION@", Encoded(UpdateService.GetOperationMutexName(executable)))
+                .Replace("@SCOPES@", string.Join(",", OperationLease.Scopes))
                 .Replace("@NAMES@", Encoded(names)).Replace("@HANDOFF@", Encoded(handoff))
                 .Replace("@INTENT@", Encoded(intent)).Replace("@CANCEL@", Encoded(cancel))
                 .Replace("@PID@", sourcePid.ToString(CultureInfo.InvariantCulture))
@@ -259,6 +277,7 @@ $handoff = $null
 $intent = $null
 $cancel = $null
 $operation = $null
+$scopeHandles = @()
 function Read-Exactly([IO.Stream]$stream, [byte[]]$bytes) {
     $offset = 0
     while ($offset -lt $bytes.Length) {
@@ -377,7 +396,21 @@ try {
         $rights = [Security.AccessControl.MutexRights]::Synchronize -bor [Security.AccessControl.MutexRights]::Modify
         $operation = [Threading.Mutex]::OpenExisting($operationName, $rights)
         try { $operationOwned = $operation.WaitOne(0) } catch [Threading.AbandonedMutexException] { $operationOwned = $true }
-        if (-not $operationOwned) { throw 'A protection operation owns the shared lease.' }
+        if (-not $operationOwned) { throw 'An operation owns the admission gate.' }
+        foreach ($scope in '@SCOPES@'.Split(',')) {
+            $scopeName = $operationName + '.' + $scope
+            try { $scopeHandle = [Threading.Mutex]::OpenExisting($scopeName, $rights) }
+            catch [Threading.WaitHandleCannotBeOpenedException] {
+                # The gate excludes new entrants until these handles are closed.
+                $scopeHandle = New-Object Threading.Mutex($false, $scopeName)
+            }
+            $scopeOwned = $false
+            try {
+                try { $scopeOwned = $scopeHandle.WaitOne(0) } catch [Threading.AbandonedMutexException] { $scopeOwned = $true }
+                if (-not $scopeOwned) { throw 'An action is still running.' }
+                $scopeHandles += $scopeHandle
+            } catch { $scopeHandle.Dispose(); throw }
+        }
         Initialize-Rename
         $activeReady = New-Object Threading.EventWaitHandle($false, [Threading.EventResetMode]::ManualReset, ($names + '.Ready'))
         $restartRequest = New-Object Threading.EventWaitHandle($false, [Threading.EventResetMode]::ManualReset, ($names + '.Restart'))
@@ -463,6 +496,10 @@ try {
         } catch { }
     }
 } finally {
+    foreach ($scopeHandle in $scopeHandles) {
+        try { $scopeHandle.ReleaseMutex() } catch { }
+        $scopeHandle.Dispose()
+    }
     if ($owned) {
         try { Accept-Restart } catch { }
         try { if ($null -ne $activeReady) { $null = $activeReady.Reset() } } catch { }

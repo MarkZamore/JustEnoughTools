@@ -48,7 +48,7 @@ namespace JustEnoughTools.Tweaks
         {
             if (id == TweakId.Indexing) return "Диск C:. Для SSD лишнее — он и так быстрый. Недоступные файлы пропускаются.";
             if (id == TweakId.Mouse) return "Для шутеров. Скорость движения указателя сохраняется.";
-            if (id == TweakId.WindowsUpdate) return "Настроить параметры и проверить обновления один раз за запуск. Без установки и перезагрузки.";
+            if (id == TweakId.WindowsUpdate) return "Скачать и установить все доступные обновления, включая необязательные. Без автоматической перезагрузки.";
             if (id == TweakId.BitLocker) return "Полностью расшифровать C:. PowerShell показывает процент и закрывается по завершении.";
             return Titles[(int)id - 1];
         }
@@ -65,6 +65,11 @@ namespace JustEnoughTools.Tweaks
     internal sealed class TweakEngine
     {
         readonly ITweakBackend backend;
+        volatile bool updatesCompleted;
+        internal void RememberCompleted(IEnumerable<TweakRow> results)
+        {
+            if(results.Any(r=>r.Id==TweakId.WindowsUpdate&&r.Parts.Any(p=>p.Key=="search-updates"&&p.State==TweakState.Applied)))updatesCompleted=true;
+        }
         internal TweakEngine(ITweakBackend backend) { this.backend = backend; }
         internal TweakRow Inspect(TweakId id)
         {
@@ -72,6 +77,9 @@ namespace JustEnoughTools.Tweaks
             var row = new TweakRow { Id = id };
             try { row.Parts.AddRange(backend.Inspect(id)); }
             catch (Exception error) { row.Parts.Add(new TweakPart("inspection", TweakState.Unknown, reason: error.Message)); }
+            if(id==TweakId.WindowsUpdate&&updatesCompleted)
+                foreach(var part in row.Parts.Where(p=>p.Key=="search-updates"))
+                {part.State=TweakState.Applied;part.Reason="Обновления обработаны в этом запуске.";}
             if (row.Parts.Count == 0) row.Parts.Add(new TweakPart("unsupported", TweakState.Unavailable, reason: "Нет доступных действий."));
             return row;
         }

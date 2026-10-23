@@ -24,6 +24,8 @@ namespace JustEnoughTools.Tests
             Scenario("explicit restart", ExplicitRestartStartsTheReplacement);
             Scenario("active restart requests and serialization", ActiveRequestsUseTheExistingInstaller);
             Scenario("external operation lease blocks installation", ExternalOperationLeaseBlocksInstallation);
+            Scenario("independent scoped actions and installer exclusion", ScopedActionsAreIndependent);
+            Scenario("abandoned scoped action", AbandonedScopeDoesNotBlockInstallation);
             Scenario("helper lease excludes competing operations", HelperLeaseExcludesCompetingOperations);
             Scenario("transient target lock", TransientTargetLockIsRetried);
             Scenario("missing target recovery", MissingTargetIsRecovered);
@@ -130,6 +132,56 @@ namespace JustEnoughTools.Tests
                 holder.AllowExit();
                 holder.AwaitExit();
                 Check(!UpdateService.IsOperationInProgress(fixture.Target), "The benign external lease was not released.");
+            }
+        }
+
+        private static void ScopedActionsAreIndependent()
+        {
+            using (var fixture = new Fixture())
+            {
+                var indexing = fixture.HoldScope("Tweak1");
+                var updates = fixture.HoldScope("Tweak12");
+                var security = fixture.HoldScope("Security");
+                var taskbar = fixture.HoldScope("Taskbar");
+                Check(UpdateService.IsOperationInProgress(fixture.Target), "Concurrent scoped operations were not observed.");
+                bool duplicateRejected = false;
+                try { using (UpdateService.AcquireOperationLease(fixture.Target, "Tweak1")) { } }
+                catch (InvalidOperationException) { duplicateRejected = true; }
+                Check(duplicateRejected, "The same action scope ran concurrently across processes.");
+                string error;
+                Check(!UpdateInstaller.TrySchedule(fixture.Target, fixture.Package, 1, false, out error),
+                    "The installer ignored scoped actions.");
+                ProbeUncommittedHelper(fixture, false);
+                indexing.AllowExit(); indexing.AwaitExit();
+                updates.AllowExit(); updates.AwaitExit();
+                security.AllowExit(); security.AwaitExit();
+                taskbar.AllowExit(); taskbar.AwaitExit();
+                var caller = fixture.Schedule(false);
+                bool installerRejectedAction = false;
+                try { using (UpdateService.AcquireOperationLease(fixture.Target, "Tweak3")) { } }
+                catch (InvalidOperationException) { installerRejectedAction = true; }
+                Check(installerRejectedAction, "An action entered while the installer owned the admission gate.");
+                caller.AllowExit();
+                fixture.AwaitInstalled();
+                fixture.CheckCleanAppDirectory();
+            }
+        }
+
+        private static void AbandonedScopeDoesNotBlockInstallation()
+        {
+            using (var fixture = new Fixture())
+            {
+                // Keep its named object alive to test an abandoned mutex rather
+                // than merely the disappearance of the last process handle.
+                using (var scope = UpdateService.CreateOperationScopeMutex(fixture.Target, "Tweak2"))
+                {
+                    var worker = fixture.HoldScope("Tweak2");
+                    worker.Kill();
+                    Check(!UpdateService.IsOperationInProgress(fixture.Target), "A crashed action permanently blocked installation.");
+                    fixture.Schedule(false).AllowExit();
+                    fixture.AwaitInstalled();
+                    fixture.CheckCleanAppDirectory();
+                }
             }
         }
 
@@ -329,6 +381,7 @@ namespace JustEnoughTools.Tests
             internal Child Schedule(bool restart) => StartChild("schedule", restart);
             internal Child RequestRestart() => StartChild("request", false);
             internal Child HoldOperation() => StartChild("lease", false);
+            internal Child HoldScope(string scope) => StartChild("scope:" + scope, false);
 
             private Child StartChild(string operation, bool restart)
             {
@@ -473,6 +526,7 @@ namespace JustEnoughTools.Tests
             }
 
             internal void AllowExit() { _exit.Set(); }
+            internal void Kill() { _process.Kill(); _process.WaitForExit(); }
             internal string Diagnostics()
             {
                 return _process.HasExited ? _process.StandardError.ReadToEnd() + _process.StandardOutput.ReadToEnd() : "caller still running";
@@ -520,6 +574,15 @@ internal static class Harness
             bootstrap.GetMethod(""Initialize"", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static).Invoke(null, null);
             Type updates = application.GetType(""JustEnoughTools.Updates.UpdateService"", true);
             if (args[0] == ""lease"") return HoldLease(updates, args);
+            if (args[0].StartsWith(""scope:"", StringComparison.Ordinal))
+            {
+                using (IDisposable lease = (IDisposable)updates.GetMethod(""AcquireOperationLease"").Invoke(null,
+                    new object[] { args[2], args[0].Substring(6) }))
+                {
+                    using (EventWaitHandle scheduled = EventWaitHandle.OpenExisting(args[3])) scheduled.Set();
+                    using (EventWaitHandle exit = EventWaitHandle.OpenExisting(args[4])) return exit.WaitOne(60000) ? 0 : 4;
+                }
+            }
             object service = null;
             bool okay;
             if (args[0] == ""request"")

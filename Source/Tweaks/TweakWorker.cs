@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
@@ -12,6 +12,7 @@ using System.Security.Principal;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
+using System.Threading.Tasks;
 using JustEnoughTools.Updates;
 using Microsoft.Win32.SafeHandles;
 
@@ -31,6 +32,8 @@ namespace JustEnoughTools.Tweaks
             string pipe = "JustEnoughTools.Tweaks." + Guid.NewGuid().ToString("N"), nonce = SecurityCoordinator.CreateNonce();
             using (var parent = Process.GetCurrentProcess())
             using (var server = SecurityCoordinator.CreateServer(pipe))
+            using (var gateHandle = UpdateService.CreateOperationMutex(parent.MainModule.FileName))
+            using (var scopeHandles = KeepScopeHandles(parent.MainModule.FileName, ids))
             {
                 var start = SecurityCoordinator.CreateWorkerStartInfo(parent.MainModule.FileName,
                     Argument + " " + pipe + " " + nonce + " " + parent.Id.ToString(CultureInfo.InvariantCulture) + " " + parent.StartTime.ToUniversalTime().Ticks.ToString(CultureInfo.InvariantCulture), false, true);
@@ -56,6 +59,22 @@ namespace JustEnoughTools.Tweaks
                     return DecodeResult(result.Payload, ids);
                 }
             }
+        }
+        private sealed class ScopeHandles : IDisposable
+        {
+            internal readonly List<Mutex> Handles = new List<Mutex>();
+            public void Dispose() { foreach (Mutex handle in Handles) handle.Dispose(); }
+        }
+        private static IDisposable KeepScopeHandles(string executable, TweakId[] ids)
+        {
+            var handles = new ScopeHandles();
+            try
+            {
+                foreach (TweakId id in ids)
+                    handles.Handles.Add(UpdateService.CreateOperationScopeMutex(executable, "Tweak" + (int)id));
+                return handles;
+            }
+            catch { handles.Dispose(); throw; }
         }
         internal static bool TryRun(string[] args, out int exitCode)
         {
@@ -88,18 +107,42 @@ namespace JustEnoughTools.Tweaks
             catch { exitCode = 1; }
             return true;
         }
+        internal enum Phase { All, PrepareUpdates, InstallUpdates }
         static List<TweakRow> Run(TweakId[] ids)
         {
             ValidateIds(ids);
-            using (var current = Process.GetCurrentProcess())
-            using (var lease = UpdateService.CreateOperationMutex(current.MainModule.FileName))
+            string executable;
+            using(var current=Process.GetCurrentProcess())executable=current.MainModule.FileName;
+            return RunBatch(ids,(id,phase)=>
             {
-                bool owned;
-                try { owned = lease.WaitOne(0); } catch (AbandonedMutexException) { owned = true; }
-                if (!owned) throw new InvalidOperationException("Другая операция приложения ещё выполняется.");
-                try { using (TweakActionLease.Take()) return new TweakEngine(new WindowsTweakBackend(new WindowsTweakPlatform(true))).Apply(ids, TweakScope.Administrator); }
-                finally { lease.ReleaseMutex(); }
-            }
+                using(UpdateService.AcquireOperationLease(executable,"Tweak"+(int)id))
+                using(TweakActionLease.Take(id))
+                {
+                    var engine=new TweakEngine(new WindowsTweakBackend(new WindowsTweakPlatform(true)));
+                    return engine.Apply(new[]{id},TweakScope.Administrator,
+                        deferUpdateSearch:phase==Phase.PrepareUpdates,updateSearchOnly:phase==Phase.InstallUpdates);
+                }
+            });
+        }
+        internal static List<TweakRow> RunBatch(TweakId[] ids,Func<TweakId,Phase,List<TweakRow>> execute)
+        {
+            ValidateIds(ids);
+            Func<TweakId,Phase,List<TweakRow>> safe=(id,phase)=>
+            {
+                try{return execute(id,phase);}
+                catch(Exception error){return new List<TweakRow>{new TweakRow{Id=id,Parts=new List<TweakPart>{
+                    new TweakPart("operation-"+phase,TweakState.Failed,true,error.Message)}}};}
+            };
+            var results=new List<TweakRow>();
+            // Finish quick machine settings before dispatching independent long jobs.
+            foreach(var id in ids.Where(id=>id!=TweakId.Indexing&&id!=TweakId.BitLocker&&id!=TweakId.WindowsUpdate))
+                results.AddRange(safe(id,Phase.All));
+            if(ids.Contains(TweakId.WindowsUpdate))results.AddRange(safe(TweakId.WindowsUpdate,Phase.PrepareUpdates));
+            var tasks=ids.Where(id=>id==TweakId.Indexing||id==TweakId.BitLocker||id==TweakId.WindowsUpdate)
+                .Select(id=>Task.Run(()=>safe(id,id==TweakId.WindowsUpdate?Phase.InstallUpdates:Phase.All))).ToArray();
+            Task.WaitAll(tasks);
+            foreach(var task in tasks)results.AddRange(task.Result);
+            return results;
         }
         internal static byte[] EncodeRequest(TweakId[] ids) { ValidateIds(ids); return Encoding.ASCII.GetBytes(Protocol + string.Join(",", ids.Select(id => ((int)id).ToString(CultureInfo.InvariantCulture)))); }
         internal static TweakId[] DecodeRequest(byte[] bytes)

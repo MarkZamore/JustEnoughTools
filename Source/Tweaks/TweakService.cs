@@ -42,6 +42,8 @@ namespace JustEnoughTools.Tweaks
         readonly TweakEngine engine;
         readonly Func<TweakId[], List<TweakRow>> elevate;
         readonly string executable;
+        readonly object sync = new object();
+        readonly HashSet<TweakId> running = new HashSet<TweakId>();
         internal TweakService(string executable) : this(executable,
             new TweakEngine(new WindowsTweakBackend(new WindowsTweakPlatform())), ids => TweakWorker.Apply(ids)) { }
         internal TweakService(string executable, TweakEngine engine, Func<TweakId[], List<TweakRow>> elevate)
@@ -51,43 +53,48 @@ namespace JustEnoughTools.Tweaks
         {
             if (ids == null || ids.Length == 0 || ids.Length > 13 || ids.Distinct().Count() != ids.Length || ids.Any(id => !TweakCatalog.IsValid(id)))
                 throw new ArgumentException("Некорректный список твиков.");
+            lock(sync)
+            {
+                if(ids.Any(running.Contains))throw new InvalidOperationException("Эта настройка уже выполняется.");
+                foreach(var id in ids)running.Add(id);
+            }
             return Task.Run(() =>
             {
                 var run = new TweakRun();
-                // Mutex ownership stays on this thread. The worker obtains the
-                // same lease for its own modifications after this phase releases it.
-                using (var lease = UpdateService.CreateOperationMutex(executable))
+                try
                 {
-                    bool owned;
-                    try { owned = lease.WaitOne(0); } catch (AbandonedMutexException) { owned = true; }
-                    if (!owned) throw new InvalidOperationException("Другая операция приложения ещё выполняется.");
-                    try { using (TweakActionLease.Take()) run.Results.AddRange(engine.Apply(ids, TweakScope.User, true)); }
-                    finally { lease.ReleaseMutex(); }
-                    var administrators = ids.Where(id => engine.Inspect(id).NeedsAdministrator).ToArray();
-                    if (administrators.Length != 0)
+                    // Independent rows take independent leases. User changes
+                    // always execute here, never under another admin's HKCU.
+                    foreach(var id in TweakCatalog.Order.Where(ids.Contains))
                     {
-                        try { run.Results.AddRange(elevate(administrators)); }
-                        catch (Exception error) { run.Message = error.Message; }
+                        try
+                        {
+                            using(UpdateService.AcquireOperationLease(executable,"Tweak"+(int)id))
+                            using(TweakActionLease.Take(id))
+                                run.Results.AddRange(engine.Apply(new[]{id},TweakScope.User,true));
+                        }
+                        catch(Exception error)
+                        {
+                            run.Results.Add(new TweakRow {Id=id,Parts=new List<TweakPart>{new TweakPart("operation",TweakState.Failed,reason:error.Message)}});
+                        }
                     }
-                    try { owned = lease.WaitOne(0); } catch (AbandonedMutexException) { owned = true; }
-                    if (!owned) throw new InvalidOperationException("Изменения ещё выполняются; повторная проверка отложена.");
-                    try
+                    var administrators=ids.Where(id=>engine.Inspect(id).NeedsAdministrator).ToArray();
+                    if(administrators.Length!=0)
                     {
-                      using (TweakActionLease.Take())
-                      {
-                        if (ids.Contains(TweakId.WindowsUpdate)) run.Results.AddRange(engine.Apply(new[] { TweakId.WindowsUpdate }, TweakScope.User, updateSearchOnly: true));
-                        run.Snapshot = engine.InspectAll();
-                        foreach (var result in run.Results)
-                            foreach (var part in result.Parts.Where(p => p.State == TweakState.Deferred))
-                            {
-                                var stored = run.Snapshot.Rows.Single(r => r.Id == result.Id).Parts.FirstOrDefault(p => p.Key == part.Key && p.State == TweakState.Applied);
-                                if (stored != null) { stored.State = TweakState.Deferred; stored.Reason = part.Reason; }
-                            }
-                      }
+                        try {run.Results.AddRange(elevate(administrators));}
+                        catch(Exception error){run.Message=error.Message;}
                     }
-                    finally { lease.ReleaseMutex(); }
+                    engine.RememberCompleted(run.Results);
+                    run.Snapshot=engine.InspectAll();
+                    foreach(var result in run.Results)
+                        foreach(var part in result.Parts.Where(p=>p.State==TweakState.Deferred))
+                        {
+                            var stored=run.Snapshot.Rows.Single(r=>r.Id==result.Id).Parts.FirstOrDefault(p=>p.Key==part.Key&&p.State==TweakState.Applied);
+                            if(stored!=null){stored.State=TweakState.Deferred;stored.Reason=part.Reason;}
+                        }
+                    return run;
                 }
-                return run;
+                finally {lock(sync)foreach(var id in ids)running.Remove(id);}
             });
         }
     }

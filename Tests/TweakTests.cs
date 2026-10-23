@@ -47,10 +47,10 @@ namespace JustEnoughTools.Tests
             Check(TweakUi.SettingHint(TweakId.Mouse, tipRow).Contains("Для шутеров") &&
                 TweakUi.BlockedTooltip(null, true).Contains("Проверка"),
                 "Useful hints and the initial disabled reason must remain available without row statuses.");
-            using (TweakActionLease.Take())
-                Check(Task.Run(() => { try { using (TweakActionLease.Take()) return false; } catch (InvalidOperationException) { return true; } }).GetAwaiter().GetResult(),
+            using (TweakActionLease.Take(TweakId.Indexing))
+                Check(Task.Run(() => { try { using (TweakActionLease.Take(TweakId.Indexing)) return false; } catch (InvalidOperationException) { return true; } }).GetAwaiter().GetResult(),
                     "Conflicting instances must not mutate Windows concurrently.");
-            Check(Task.Run(() => { using (TweakActionLease.Take()) return true; }).GetAwaiter().GetResult(),
+            Check(Task.Run(() => { using (TweakActionLease.Take(TweakId.Indexing)) return true; }).GetAwaiter().GetResult(),
                 "The action lease must be released after completion.");
             var backend = new FakeBackend();
             var engine = new TweakEngine(backend);
@@ -82,12 +82,12 @@ namespace JustEnoughTools.Tests
             Check(cancelled.Message == "cancelled" && cancelled.Snapshot != null, "UAC cancellation must preserve local results and refresh state.");
 
             var updateBackend=new FakeBackend();
-            updateBackend.States[TweakId.WindowsUpdate]=new[]{new TweakPart("preference",TweakState.Pending),new TweakPart("search-updates",TweakState.Pending)};
+            updateBackend.States[TweakId.WindowsUpdate]=new[]{new TweakPart("preference",TweakState.Pending),new TweakPart("search-updates",TweakState.Pending,true)};
             var updateEngine=new TweakEngine(updateBackend);
             updateEngine.Apply(new[]{TweakId.WindowsUpdate},TweakScope.User,true);
-            updateEngine.Apply(new[]{TweakId.WindowsUpdate},TweakScope.User,updateSearchOnly:true);
+            updateEngine.Apply(new[]{TweakId.WindowsUpdate},TweakScope.Administrator,updateSearchOnly:true);
             Check(updateBackend.Applied.Count(p=>p=="preference")==1&&updateBackend.Applied.Count(p=>p=="search-updates")==1,
-                "Final search phase must not replay previously attempted user preferences.");
+                "The elevated installation phase must not replay user preferences.");
 
             var platform = new FakePlatform(); var windows = new WindowsTweakBackend(platform);
             var keyboard = windows.Inspect(TweakId.Keyboard);

@@ -215,7 +215,7 @@ namespace JustEnoughTools.Tweaks
     internal sealed class WindowsTweakBackend : ITweakBackend
     {
         readonly ITweakPlatform system;
-        bool searched;
+        volatile bool searched;
         internal WindowsTweakBackend(ITweakPlatform system) { this.system = system; }
         IEnumerable<TweakSetting> EffectiveSettings(TweakId id)
         {
@@ -281,9 +281,10 @@ namespace JustEnoughTools.Tweaks
                     if (key == "theme" && !system.Certified("theme")) { result.Add(Unverified(key, "Тёмная тема Windows")); continue; }
                     if (key == "search-updates")
                     {
+                        if(system.UpdateManaged){result.Add(new TweakPart(key,TweakState.Unavailable,reason:"Обновления управляются политикой Windows."));continue;}
                         int available = searched ? 1 : system.ReadNative(key);
-                        result.Add(new TweakPart(key, searched ? TweakState.Applied : available == 2 ? TweakState.Unavailable : available < 0 ? TweakState.Unknown : TweakState.Pending,
-                            reason: searched ? "Проверка обновлений выполнена в этом запуске." : available == 2 ? "Поиск обновлений недоступен." : available < 0 ? "Не удалось проверить доступность поиска обновлений." : "Проверить наличие обновлений без установки.")); continue;
+                        result.Add(new TweakPart(key, searched ? TweakState.Applied : available == 2 ? TweakState.Unavailable : available < 0 ? TweakState.Unknown : TweakState.Pending, true,
+                            reason: searched ? "Обновления обработаны в этом запуске." : available == 2 ? "Поиск обновлений недоступен." : available < 0 ? "Не удалось проверить доступность поиска обновлений." : "Скачать и установить все доступные обновления, включая необязательные.")); continue;
                     }
                     int value = system.ReadNative(key);
                     TweakState state = value < 0 ? TweakState.Unknown : value == 1 ? TweakState.Applied : value == 2 ? TweakState.Unavailable : value == 3 ? TweakState.Running : TweakState.Pending;

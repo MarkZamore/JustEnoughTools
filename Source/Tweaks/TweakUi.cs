@@ -45,16 +45,17 @@ namespace JustEnoughTools.Tweaks
                 window.RegisterName("TweakApply" + (int)id, button);
                 Grid.SetColumn(button, 1); cell.Children.Add(label); cell.Children.Add(button); grid.Children.Add(cell);
             }
-            All.Click += delegate { if (Apply != null) Apply(TweakCatalog.All.ToArray()); };
+            All.Click += delegate { if (Apply != null) Apply(buttons.Where(pair => pair.Value.IsEnabled).Select(pair => pair.Key).ToArray()); };
         }
-        internal void Refresh(bool available)
+        internal void Refresh(bool available, ISet<TweakId> busy = null)
         {
-            All.IsEnabled = available && Snapshot != null && Snapshot.CanApply;
+            All.IsEnabled = available && Snapshot != null && Snapshot.Rows.Any(row => row.CanApply && (busy == null || !busy.Contains(row.Id)));
             foreach (var id in TweakCatalog.All)
             {
                 var row = Snapshot == null ? null : Snapshot.Rows.FirstOrDefault(r => r.Id == id);
-                buttons[id].IsEnabled = available && row != null && row.CanApply;
-                buttons[id].ToolTip = buttons[id].IsEnabled ? null : BlockedTooltip(row, available);
+                bool running = busy != null && busy.Contains(id);
+                buttons[id].IsEnabled = available && !running && row != null && row.CanApply;
+                buttons[id].ToolTip = running ? "Операция уже выполняется." : buttons[id].IsEnabled ? null : BlockedTooltip(row, available);
                 labels[id].ToolTip = SettingHint(id, row);
             }
         }

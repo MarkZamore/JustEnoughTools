@@ -72,8 +72,15 @@ namespace JustEnoughTools.Updates
         public static string GetOperationMutexName(string executablePath) { return OperationLease.NameFor(executablePath); }
 
         // The caller must acquire/release this handle on the same thread. Both
-        // the elevated worker and installer use it for their complete operation.
+        // legacy callers and the installer use it as an exclusive admission gate.
         public static Mutex CreateOperationMutex(string executablePath) { return OperationLease.Open(executablePath); }
+
+        // Dispose on the acquiring thread, inside a synchronous worker block.
+        public static IDisposable AcquireOperationLease(string executablePath, string scope)
+        { return OperationLease.Acquire(executablePath, scope); }
+
+        internal static Mutex CreateOperationScopeMutex(string executablePath, string scope)
+        { return OperationLease.OpenScope(executablePath, scope); }
 
         public static bool IsOperationInProgress(string executablePath) { return OperationLease.IsBusy(executablePath); }
 

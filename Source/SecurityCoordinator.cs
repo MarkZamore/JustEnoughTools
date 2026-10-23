@@ -53,7 +53,8 @@ namespace JustEnoughTools
             using (var parent = Process.GetCurrentProcess())
             // Keep the medium-created kernel object alive during elevation.
             // Ownership is acquired and released by the worker's entry thread.
-            using (var leaseHandle = UpdateService.CreateOperationMutex(parent.MainModule.FileName))
+            using (var gateHandle = UpdateService.CreateOperationMutex(parent.MainModule.FileName))
+            using (var leaseHandle = UpdateService.CreateOperationScopeMutex(parent.MainModule.FileName, "Security"))
             {
                 Process worker;
                 try
@@ -151,18 +152,10 @@ namespace JustEnoughTools
                         bool executionStarted = false;
                         try
                         {
-                            using (var operation = UpdateService.CreateOperationMutex(current.MainModule.FileName))
+                            using (UpdateService.AcquireOperationLease(current.MainModule.FileName, "Security"))
                             {
-                                bool owned;
-                                try { owned = operation.WaitOne(ConnectTimeoutMilliseconds); }
-                                catch (AbandonedMutexException) { owned = true; }
-                                if (!owned) throw new InvalidOperationException("Установка обновления занята. Изменения не начинались.");
-                                try
-                                {
-                                    executionStarted = true;
-                                    report = SecurityEngine.Run();
-                                }
-                                finally { operation.ReleaseMutex(); }
+                                executionStarted = true;
+                                report = SecurityEngine.Run();
                             }
                         }
                         catch (Exception error)

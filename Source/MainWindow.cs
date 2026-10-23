@@ -1,5 +1,7 @@
 using System;
 using System.ComponentModel;
+using System.Collections.Generic;
+using System.Linq;
 using System.IO;
 using System.Reflection;
 using System.Threading;
@@ -41,8 +43,9 @@ namespace JustEnoughTools
         readonly TextBlock protectionDescription;
         readonly ProgressBar updateProgress;
         Task updateTask;
-        bool configuring;
-        bool saving;
+        readonly HashSet<TweakId> busyTweaks = new HashSet<TweakId>();
+        bool securityBusy, taskbarBusy;
+        bool securitySaving, taskbarSaving;
         bool closeAfterAction;
         bool closing;
         bool closeAllowed;
@@ -131,23 +134,43 @@ namespace JustEnoughTools
 
         async void ApplyTweaks(TweakId[] ids)
         {
-            if (configuring || saving || closing || tweakUi.Snapshot == null) return;
-            configuring = true;
-            iconPopup.IsOpen = false; taskbarExport.Popup.IsOpen = false;
+            if (closing || closeAfterAction || tweakUi.Snapshot == null || ids == null) return;
+            var requested = ids.Where(id => !busyTweaks.Contains(id) &&
+                tweakUi.Snapshot.Rows.Any(row => row.Id == id && row.CanApply)).Distinct().ToArray();
+            if (requested.Length == 0) return;
+            foreach (var id in requested) busyTweaks.Add(id);
             tweakUi.SetReport("Выполняются настройки…");
             RefreshButtons();
             try
             {
-                var result = await tweakService.ApplyAsync(ids);
-                tweakUi.Snapshot = result.Snapshot;
+                var result = await tweakService.ApplyAsync(requested);
+                // Concurrent actions return independent snapshots. A completion
+                // must not replace newer states of rows owned by another action.
+                if (result.Snapshot != null)
+                    foreach (var row in result.Snapshot.Rows.Where(row => requested.Contains(row.Id)))
+                    {
+                        tweakUi.Snapshot.Rows.RemoveAll(previous => previous.Id == row.Id);
+                        tweakUi.Snapshot.Rows.Add(row);
+                    }
                 tweakUi.SetReport(result.Format());
             }
             catch (Exception error) { tweakUi.SetReport(error.Message); }
             finally
             {
-                configuring = false; RefreshButtons();
-                if (closeAfterAction) Window.Close();
+                foreach (var id in requested) busyTweaks.Remove(id);
+                RefreshButtons();
+                CloseWhenIdle();
             }
+        }
+
+        bool HasActiveOperations
+        {
+            get { return busyTweaks.Count != 0 || securityBusy || taskbarBusy || securitySaving || taskbarSaving; }
+        }
+
+        void CloseWhenIdle()
+        {
+            if (closeAfterAction && !HasActiveOperations) Window.Close();
         }
 
         async void InspectSecurityAtStartup(object sender, RoutedEventArgs args)
@@ -227,24 +250,24 @@ namespace JustEnoughTools
 
         void RefreshButtons()
         {
-            bool available = !configuring && !saving && !closing;
-            tweakUi.Refresh(available);
-            configureButton.IsEnabled = configureSecurity != null && available && securityChecked &&
+            bool available = !closing && !closeAfterAction;
+            tweakUi.Refresh(available, busyTweaks);
+            configureButton.IsEnabled = configureSecurity != null && available && !securityBusy && securityChecked &&
                 !checkingSecurity && securityNeedsChanges;
-            saveButton.IsEnabled = available;
-            iconButton.IsEnabled = available;
-            addToStartMenu.IsEnabled = available;
-            applyTaskbarButton.IsEnabled = available;
-            taskbarExport.Save.IsEnabled = available;
-            taskbarExport.Icon.IsEnabled = available;
-            taskbarExport.StartMenu.IsEnabled = available;
-            updateButton.IsEnabled = updateReady && updates.HasPreparedUpdate && available;
+            saveButton.IsEnabled = available && !securitySaving;
+            iconButton.IsEnabled = available && !securitySaving;
+            addToStartMenu.IsEnabled = available && !securitySaving;
+            applyTaskbarButton.IsEnabled = available && !taskbarBusy;
+            taskbarExport.Save.IsEnabled = available && !taskbarSaving;
+            taskbarExport.Icon.IsEnabled = available && !taskbarSaving;
+            taskbarExport.StartMenu.IsEnabled = available && !taskbarSaving;
+            updateButton.IsEnabled = updateReady && updates.HasPreparedUpdate && available && !HasActiveOperations;
         }
 
         async void ConfigureSecurity(object sender, RoutedEventArgs args)
         {
-            if (configuring || saving || closing || configureSecurity == null || !configureButton.IsEnabled) return;
-            configuring = true;
+            if (securityBusy || closing || closeAfterAction || configureSecurity == null || !configureButton.IsEnabled) return;
+            securityBusy = true;
             iconPopup.IsOpen = false;
             RefreshButtons();
             try
@@ -260,9 +283,9 @@ namespace JustEnoughTools
             finally
             {
                 await RefreshSecurityStateAsync();
-                configuring = false;
+                securityBusy = false;
                 RefreshButtons();
-                if (closeAfterAction) Window.Close();
+                CloseWhenIdle();
             }
         }
 
@@ -343,42 +366,44 @@ namespace JustEnoughTools
 
         async void ApplyTaskbar(object sender, RoutedEventArgs args)
         {
-            if (configuring || saving || closing) return;
-            configuring = true;
-            iconPopup.IsOpen = false; taskbarExport.Popup.IsOpen = false;
+            if (taskbarBusy || closing || closeAfterAction) return;
+            taskbarBusy = true;
             RefreshButtons();
             try
             {
                 TaskbarResult result = await Task.Run(delegate
                 {
-                    using (var mutex = UpdateService.CreateOperationMutex(executablePath))
-                    {
-                        bool acquired;
-                        try { acquired = mutex.WaitOne(0); } catch (AbandonedMutexException) { acquired = true; }
-                        if (!acquired) throw new InvalidOperationException("Другая операция приложения ещё выполняется.");
-                        try { return TaskbarRepair.Apply(); }
-                        finally { mutex.ReleaseMutex(); }
-                    }
+                    using (UpdateService.AcquireOperationLease(executablePath, "Taskbar"))
+                        return TaskbarRepair.Apply();
                 });
                 if (!result.Succeeded) ShowProblem(result.Reason);
             }
             catch (Exception error) { ShowProblem(error.Message); }
             finally
             {
-                try { tweakUi.Snapshot = await tweakService.InspectAsync(); }
+                try
+                {
+                    var snapshot = await tweakService.InspectAsync();
+                    var taskbar = snapshot.Rows.FirstOrDefault(row => row.Id == TweakId.Taskbar);
+                    if (taskbar != null && !busyTweaks.Contains(TweakId.Taskbar) && tweakUi.Snapshot != null)
+                    {
+                        tweakUi.Snapshot.Rows.RemoveAll(row => row.Id == TweakId.Taskbar);
+                        tweakUi.Snapshot.Rows.Add(taskbar);
+                    }
+                }
                 catch { }
-                configuring = false; RefreshButtons(); if (closeAfterAction) Window.Close();
+                taskbarBusy = false; RefreshButtons(); CloseWhenIdle();
             }
         }
 
         void SaveExecutable(object sender, RoutedEventArgs args)
         {
-            if (configuring || saving || closing) return;
             bool taskbar = ReferenceEquals(sender, taskbarExport.Save);
+            if (closing || closeAfterAction || (taskbar ? taskbarSaving : securitySaving)) return;
             SettingExportUi export = taskbar ? taskbarExport : securityExport;
             FixedAction action = taskbar ? FixedAction.TaskbarMode2 : FixedAction.Security;
-            saving = true;
-            iconPopup.IsOpen = false; taskbarExport.Popup.IsOpen = false;
+            if (taskbar) taskbarSaving = true; else securitySaving = true;
+            export.Popup.IsOpen = false;
             RefreshButtons();
             try
             {
@@ -392,15 +417,15 @@ namespace JustEnoughTools
             catch (Exception error) { ShowProblem(error.Message); }
             finally
             {
-                saving = false;
+                if (taskbar) taskbarSaving = false; else securitySaving = false;
                 RefreshButtons();
-                if (closeAfterAction) Window.Close();
+                CloseWhenIdle();
             }
         }
 
         void UpdateAndRestart(object sender, RoutedEventArgs args)
         {
-            if (closing || configuring || saving || !updates.HasPreparedUpdate) return;
+            if (closing || closeAfterAction || HasActiveOperations || !updates.HasPreparedUpdate) return;
             restartAfterUpdate = true;
             Window.Close();
         }
@@ -410,9 +435,10 @@ namespace JustEnoughTools
             if (closeAllowed) return;
             args.Cancel = true;
             if (closing) return;
-            if (configuring || saving)
+            if (HasActiveOperations)
             {
                 closeAfterAction = true;
+                RefreshButtons();
                 return;
             }
             closing = true;

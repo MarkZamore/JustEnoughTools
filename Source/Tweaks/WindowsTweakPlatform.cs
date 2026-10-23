@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
@@ -240,18 +240,13 @@ try {
         }
         static string SearchUpdates()
         {
-            object session = null, searcher = null, result = null, updates = null;
-            try
+            using (var updates = new ComWindowsUpdateBatch())
             {
-                session = Activator.CreateInstance(Type.GetTypeFromProgID("Microsoft.Update.Session", true));
-                dynamic s = session; s.ClientApplicationID = "JustEnoughTools";
-                searcher = s.CreateUpdateSearcher(); dynamic finder = searcher;
-                result = finder.Search("IsInstalled=0 and IsHidden=0"); dynamic found = result;
-                if ((int)found.ResultCode != 2) throw new InvalidOperationException("Проверка Windows Update не завершилась успешно.");
-                updates = found.Updates; int count = (int)((dynamic)updates).Count;
-                return "Проверка Windows Update завершена. Доступно обновлений: " + count + ". Установка не запускалась.";
+                var result = WindowsUpdateOperation.Run(updates);
+                string message = result.Describe();
+                if (result.Errors.Count != 0) throw new InvalidOperationException(message);
+                return message;
             }
-            finally { Release(updates); Release(result); Release(searcher); Release(session); }
         }
         const string MicrosoftUpdateId = "7971f918-a847-4430-9279-4a52d1efe18d";
         static int MicrosoftUpdateState()
@@ -318,6 +313,165 @@ try {
         {
             [return: MarshalAs(UnmanagedType.Interface)] object GetCurrentTheme();
             void ApplyTheme([MarshalAs(UnmanagedType.BStr)] string path);
+        }
+    }
+
+    // WUA runs synchronously on the tweak's worker. Only this fixed operation is
+    // exposed to the administrative worker; no update IDs or commands cross IPC.
+    internal interface IWindowsUpdateItem
+    {
+        string Title { get; }
+        bool Downloaded { get; }
+        bool EulaAccepted { get; }
+        void AcceptEula();
+    }
+    internal sealed class WindowsUpdateStepResult
+    {
+        internal int Code, HResult;
+        internal bool RebootRequired;
+        internal bool Succeeded { get { return Code == 2 && HResult >= 0; } }
+    }
+    internal interface IWindowsUpdateBatch : IDisposable
+    {
+        IList<IWindowsUpdateItem> Search();
+        WindowsUpdateStepResult Download(IWindowsUpdateItem update);
+        WindowsUpdateStepResult Install(IWindowsUpdateItem update);
+    }
+    internal sealed class WindowsUpdateRunResult
+    {
+        internal int Found, Downloaded, Installed;
+        internal bool RebootRequired;
+        internal readonly List<string> Errors = new List<string>();
+        internal string Describe()
+        {
+            string text = Found == 0 ? "Доступных обновлений нет." :
+                "Обновлений найдено: " + Found + "; загружено: " + Downloaded + "; установлено: " + Installed + ".";
+            if (RebootRequired) text += " Для завершения требуется перезагрузка; автоматически она не запускается.";
+            if (Errors.Count != 0) text += " Ошибок: " + Errors.Count + ". " + string.Join("; ", Errors.Take(5));
+            return text;
+        }
+    }
+    internal static class WindowsUpdateOperation
+    {
+        internal const string Criteria = "IsInstalled=0 and IsHidden=0";
+        static string Failure(IWindowsUpdateItem update,Exception error)
+        {
+            string title;
+            try{title=update.Title;}catch{title="Обновление";}
+            string text=title+": "+error.Message;
+            return text.Length>1000?text.Substring(0,1000):text;
+        }
+        internal static WindowsUpdateRunResult Run(IWindowsUpdateBatch batch)
+        {
+            var result = new WindowsUpdateRunResult();
+            // No Type, BrowseOnly, IsAssigned or AutoSelect filter: optional
+            // software and driver updates offered by the configured service count.
+            var updates = batch.Search(); result.Found = updates.Count;
+            var ready = new List<IWindowsUpdateItem>();
+            foreach (var update in updates)
+            {
+                try
+                {
+                    if (!update.EulaAccepted) update.AcceptEula();
+                    if (!update.Downloaded)
+                    {
+                        var step = batch.Download(update);
+                        if (!step.Succeeded || !update.Downloaded)
+                            throw new InvalidOperationException("Ошибка загрузки (0x" + unchecked((uint)step.HResult).ToString("X8") + ").");
+                    }
+                    result.Downloaded++; ready.Add(update);
+                }
+                catch (Exception error) { result.Errors.Add(Failure(update,error)); }
+            }
+            // Install separately so an exclusive update or one failed package
+            // cannot prevent every other downloaded package being attempted.
+            foreach (var update in ready)
+            {
+                try
+                {
+                    var step = batch.Install(update); result.RebootRequired |= step.RebootRequired;
+                    if (!step.Succeeded)
+                        throw new InvalidOperationException("Ошибка установки (0x" + unchecked((uint)step.HResult).ToString("X8") + ").");
+                    result.Installed++;
+                }
+                catch (Exception error) { result.Errors.Add(Failure(update,error)); }
+            }
+            return result;
+        }
+    }
+    internal sealed class ComWindowsUpdateBatch : IWindowsUpdateBatch
+    {
+        object session, searcher, searchResult, collection;
+        readonly List<ComUpdate> owned = new List<ComUpdate>();
+        internal ComWindowsUpdateBatch()
+        {
+            session = Activator.CreateInstance(Type.GetTypeFromProgID("Microsoft.Update.Session", true));
+            ((dynamic)session).ClientApplicationID = "JustEnoughTools";
+        }
+        public IList<IWindowsUpdateItem> Search()
+        {
+            searcher = ((dynamic)session).CreateUpdateSearcher();
+            ((dynamic)searcher).Online = true;
+            searchResult = ((dynamic)searcher).Search(WindowsUpdateOperation.Criteria);
+            if ((int)((dynamic)searchResult).ResultCode != 2)
+                throw new InvalidOperationException("Проверка обновлений Windows не завершилась успешно.");
+            collection = ((dynamic)searchResult).Updates;
+            var result = new List<IWindowsUpdateItem>();
+            for (int index = 0; index < (int)((dynamic)collection).Count; index++)
+            {
+                var update = new ComUpdate(((dynamic)collection).Item(index));
+                owned.Add(update); result.Add(update);
+            }
+            return result;
+        }
+        public WindowsUpdateStepResult Download(IWindowsUpdateItem update) { return Execute((ComUpdate)update, false); }
+        public WindowsUpdateStepResult Install(IWindowsUpdateItem update) { return Execute((ComUpdate)update, true); }
+        WindowsUpdateStepResult Execute(ComUpdate update, bool install)
+        {
+            object group = null, worker = null, result = null, detail = null;
+            try
+            {
+                group = Activator.CreateInstance(Type.GetTypeFromProgID("Microsoft.Update.UpdateColl", true));
+                ((dynamic)group).Add(update.Value);
+                worker = install ? ((dynamic)session).CreateUpdateInstaller() : ((dynamic)session).CreateUpdateDownloader();
+                if (install)
+                {
+                    // Never invoke RunWizard, restart the machine or force an
+                    // unavailable update. Unsupported silent packages report an error.
+                    ((dynamic)worker).AllowSourcePrompts = false;
+                    ((dynamic)worker).ForceQuiet = true;
+                    ((dynamic)worker).AttemptCloseAppsIfNecessary = false;
+                    if ((bool)((dynamic)worker).IsBusy)
+                        throw new InvalidOperationException("Windows уже устанавливает обновление. Повторите позже.");
+                    if ((bool)((dynamic)worker).RebootRequiredBeforeInstallation)
+                        return new WindowsUpdateStepResult { Code = 4, HResult = unchecked((int)0x80240016), RebootRequired = true };
+                }
+                ((dynamic)worker).Updates = group;
+                result = install ? ((dynamic)worker).Install() : ((dynamic)worker).Download();
+                detail = ((dynamic)result).GetUpdateResult(0);
+                return new WindowsUpdateStepResult
+                {
+                    Code = (int)((dynamic)detail).ResultCode, HResult = (int)((dynamic)detail).HResult,
+                    RebootRequired = install && ((bool)((dynamic)result).RebootRequired || (bool)((dynamic)detail).RebootRequired)
+                };
+            }
+            finally { WindowsTweakPlatform.Release(detail); WindowsTweakPlatform.Release(result); WindowsTweakPlatform.Release(worker); WindowsTweakPlatform.Release(group); }
+        }
+        public void Dispose()
+        {
+            foreach (var item in owned) WindowsTweakPlatform.Release(item.Value);
+            owned.Clear(); WindowsTweakPlatform.Release(collection); WindowsTweakPlatform.Release(searchResult);
+            WindowsTweakPlatform.Release(searcher); WindowsTweakPlatform.Release(session);
+            collection = searchResult = searcher = session = null;
+        }
+        sealed class ComUpdate : IWindowsUpdateItem
+        {
+            internal readonly object Value;
+            internal ComUpdate(object value) { Value = value; }
+            public string Title { get { return (string)((dynamic)Value).Title; } }
+            public bool Downloaded { get { return (bool)((dynamic)Value).IsDownloaded; } }
+            public bool EulaAccepted { get { return (bool)((dynamic)Value).EulaAccepted; } }
+            public void AcceptEula() { ((dynamic)Value).AcceptEula(); }
         }
     }
 

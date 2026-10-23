@@ -16,7 +16,11 @@ namespace JustEnoughTools.Updates
 
         internal static Mutex Open(string executablePath)
         {
-            string name = NameFor(executablePath);
+            return OpenName(NameFor(executablePath));
+        }
+
+        private static Mutex OpenName(string name)
+        {
             try { return Mutex.OpenExisting(name, MutexRights.Synchronize | MutexRights.Modify); }
             catch (WaitHandleCannotBeOpenedException) { }
 
@@ -49,20 +53,79 @@ namespace JustEnoughTools.Updates
             }
         }
 
+        internal static readonly string[] Scopes = {
+            "Security", "Taskbar", "Tweak1", "Tweak2", "Tweak3", "Tweak4", "Tweak5", "Tweak6", "Tweak7",
+            "Tweak8", "Tweak9", "Tweak10", "Tweak11", "Tweak12", "Tweak13"
+        };
+
+        internal static Mutex OpenScope(string executablePath, string scope)
+        {
+            if (Array.IndexOf(Scopes, scope) < 0) throw new ArgumentOutOfRangeException("scope");
+            return OpenName(NameFor(executablePath) + "." + scope);
+        }
+
+        // The installer owns the admission gate for its full lifetime. Actions
+        // hold it only while entering one fixed scope, so independent actions
+        // can proceed together without racing an installer handoff.
+        internal static IDisposable Acquire(string executablePath, string scope)
+        {
+            using (Mutex gate = Open(executablePath))
+            {
+                if (!Take(gate, 1000)) throw new InvalidOperationException("Устанавливается обновление приложения.");
+                try
+                {
+                    Mutex action = OpenScope(executablePath, scope);
+                    try
+                    {
+                        if (!Take(action)) throw new InvalidOperationException("Эта операция уже выполняется.");
+                        return new Owned(action);
+                    }
+                    catch { action.Dispose(); throw; }
+                }
+                finally { gate.ReleaseMutex(); }
+            }
+        }
+
+        private sealed class Owned : IDisposable
+        {
+            private Mutex _mutex;
+            internal Owned(Mutex mutex) { _mutex = mutex; }
+            public void Dispose()
+            {
+                Mutex mutex = _mutex;
+                if (mutex == null) return;
+                mutex.ReleaseMutex();
+                _mutex = null;
+                mutex.Dispose();
+            }
+        }
+
+        private static bool Take(Mutex mutex, int milliseconds = 0)
+        {
+            try { return mutex.WaitOne(milliseconds); }
+            catch (AbandonedMutexException) { return true; }
+        }
+
         internal static bool IsBusy(string executablePath)
         {
             try
             {
-                using (Mutex mutex = Open(executablePath))
+                using (Mutex gate = Open(executablePath))
                 {
-                    bool acquired = false;
+                    if (!Take(gate)) return true;
                     try
                     {
-                        try { acquired = mutex.WaitOne(0); }
-                        catch (AbandonedMutexException) { acquired = true; }
-                        return !acquired;
+                        foreach (string scope in Scopes)
+                        {
+                            using (Mutex mutex = OpenScope(executablePath, scope))
+                            {
+                                if (!Take(mutex)) return true;
+                                mutex.ReleaseMutex();
+                            }
+                        }
+                        return false;
                     }
-                    finally { if (acquired) mutex.ReleaseMutex(); }
+                    finally { gate.ReleaseMutex(); }
                 }
             }
             catch (Exception ex) when (ex is UnauthorizedAccessException || ex is SecurityException || ex is IOException || ex is WaitHandleCannotBeOpenedException)

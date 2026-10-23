@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
@@ -61,7 +61,7 @@ namespace JustEnoughTools.Tweaks
                     bool owned;
                     try { owned = lease.WaitOne(0); } catch (AbandonedMutexException) { owned = true; }
                     if (!owned) throw new InvalidOperationException("Другая операция приложения ещё выполняется.");
-                    try { using (TweakActionLease.Take()) run.Results.AddRange(engine.Apply(ids.Where(id => id != TweakId.WindowsUpdate), TweakScope.User)); }
+                    try { using (TweakActionLease.Take()) run.Results.AddRange(engine.Apply(ids, TweakScope.User, true)); }
                     finally { lease.ReleaseMutex(); }
                     var administrators = ids.Where(id => engine.Inspect(id).NeedsAdministrator).ToArray();
                     if (administrators.Length != 0)
@@ -75,7 +75,7 @@ namespace JustEnoughTools.Tweaks
                     {
                       using (TweakActionLease.Take())
                       {
-                        if (ids.Contains(TweakId.WindowsUpdate)) run.Results.AddRange(engine.Apply(new[] { TweakId.WindowsUpdate }, TweakScope.User));
+                        if (ids.Contains(TweakId.WindowsUpdate)) run.Results.AddRange(engine.Apply(new[] { TweakId.WindowsUpdate }, TweakScope.User, updateSearchOnly: true));
                         run.Snapshot = engine.InspectAll();
                         foreach (var result in run.Results)
                             foreach (var part in result.Parts.Where(p => p.State == TweakState.Deferred))

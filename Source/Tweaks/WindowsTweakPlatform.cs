@@ -72,6 +72,10 @@ namespace JustEnoughTools.Tweaks
         {
             using (var setting = NativeTrayPreferences.Open(kind)) setting.Set(enabled);
         }
+        public WindowsPreferenceSnapshot ReadWindowsPreference(WindowsPreferenceId id)
+        {using(var setting=NativeWindowsPreferences.Open(id))return setting.Read();}
+        public void SetWindowsPreference(WindowsPreferenceId id,object value)
+        {using(var setting=NativeWindowsPreferences.Open(id))setting.Set(value);}
         const uint StickyMask = 1 | 4 | 8 | 16 | 32 | 64 | 128 | 256;
         public int ReadNative(string key)
         {
@@ -352,6 +356,9 @@ try {
         };
         internal static bool Allows(string build, string capability)
         {
+            WindowsPreferenceId id;
+            if(build=="26300.9711"&&capability.StartsWith("broker:",StringComparison.Ordinal)&&
+                Enum.TryParse(capability.Substring(7),out id)&&Enum.IsDefined(typeof(WindowsPreferenceId),id))return true;
             return build == "26300.9457" ? Verified.Contains(capability) : build == "26300.9711" && Verified9711.Contains(capability);
         }
     }

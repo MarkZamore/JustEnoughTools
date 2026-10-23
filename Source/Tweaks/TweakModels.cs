@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 
@@ -38,7 +38,7 @@ namespace JustEnoughTools.Tweaks
             "Отключить индексирование", "Отключить BitLocker", "Настроить клавиатуру",
             "Отключить залипание клавиш", "Включить историю буфера", "Отключить ускорение мыши",
             "Тема Windows (тёмная)", "Настроить меню Пуск", "Настроить панель задач",
-            "Настроить часы", "Показывать заряд батареи", "Настроить Windows Update", "Отключить автозагрузку" };
+            "Настроить часы", "Показывать заряд батареи", "Настроить обновления Windows", "Отключить автозагрузку" };
         internal static readonly TweakId[] Order = { TweakId.Keyboard, TweakId.StickyKeys, TweakId.Clipboard,
             TweakId.Mouse, TweakId.Theme, TweakId.Start, TweakId.Taskbar, TweakId.Clock, TweakId.Battery,
             TweakId.Startup, TweakId.WindowsUpdate, TweakId.Indexing, TweakId.BitLocker };
@@ -81,7 +81,7 @@ namespace JustEnoughTools.Tweaks
             foreach (var id in TweakCatalog.All) snapshot.Rows.Add(Inspect(id));
             return snapshot;
         }
-        internal List<TweakRow> Apply(IEnumerable<TweakId> requested, TweakScope scope)
+        internal List<TweakRow> Apply(IEnumerable<TweakId> requested, TweakScope scope, bool deferUpdateSearch = false, bool updateSearchOnly = false)
         {
             var ids = new HashSet<TweakId>(requested);
             if (ids.Any(id => !TweakCatalog.IsValid(id))) throw new ArgumentOutOfRangeException(nameof(requested));
@@ -91,6 +91,8 @@ namespace JustEnoughTools.Tweaks
                 var row = new TweakRow { Id = id };
                 foreach (var part in Inspect(id).Parts)
                 {
+                    if(deferUpdateSearch&&id==TweakId.WindowsUpdate&&part.Key=="search-updates")continue;
+                    if(updateSearchOnly&&(id!=TweakId.WindowsUpdate||part.Key!="search-updates"))continue;
                     if (part.State != TweakState.Pending || part.Administrator != (scope == TweakScope.Administrator)) continue;
                     try { row.Parts.Add(backend.Apply(id, part.Key)); }
                     catch (Exception error) { row.Parts.Add(new TweakPart(part.Key, TweakState.Failed, part.Administrator, error.Message)); }

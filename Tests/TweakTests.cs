@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -81,12 +81,20 @@ namespace JustEnoughTools.Tests
             var cancelled = service.ApplyAsync(new[] { TweakId.BitLocker, TweakId.Mouse }).GetAwaiter().GetResult();
             Check(cancelled.Message == "cancelled" && cancelled.Snapshot != null, "UAC cancellation must preserve local results and refresh state.");
 
+            var updateBackend=new FakeBackend();
+            updateBackend.States[TweakId.WindowsUpdate]=new[]{new TweakPart("preference",TweakState.Pending),new TweakPart("search-updates",TweakState.Pending)};
+            var updateEngine=new TweakEngine(updateBackend);
+            updateEngine.Apply(new[]{TweakId.WindowsUpdate},TweakScope.User,true);
+            updateEngine.Apply(new[]{TweakId.WindowsUpdate},TweakScope.User,updateSearchOnly:true);
+            Check(updateBackend.Applied.Count(p=>p=="preference")==1&&updateBackend.Applied.Count(p=>p=="search-updates")==1,
+                "Final search phase must not replay previously attempted user preferences.");
+
             var platform = new FakePlatform(); var windows = new WindowsTweakBackend(platform);
             var keyboard = windows.Inspect(TweakId.Keyboard);
             Check(keyboard.Count == 3 && keyboard.All(p => p.State == TweakState.Pending && !p.Administrator), "Input settings are independent user actions.");
             foreach (var p in keyboard) windows.Apply(TweakId.Keyboard, p.Key);
             Check(windows.Inspect(TweakId.Keyboard).All(p => p.State == TweakState.Applied), "Native setters require actual readback.");
-            Check(windows.Inspect(TweakId.Keyboard).All(p => p.Reason.Contains("уже настроено")),
+            Check(windows.Inspect(TweakId.Keyboard).All(p => p.Reason.IndexOf("уже настроено",StringComparison.OrdinalIgnoreCase)>=0),
                 "Native actions must explain their disabled state in tooltips after readback.");
             platform.Lie = true;
             MustFail(() => windows.Apply(TweakId.Mouse, "mouse"), "A setter that did not change effective input state must fail.");
@@ -101,14 +109,17 @@ namespace JustEnoughTools.Tests
                 "Unverified adapters must refuse their setter even when called directly through the engine.");
             platform.CertifiedValue = true;
             platform.Values[TweakSettings.Advanced + "/TaskbarAl"] = new RegistryDatum { Exists = true, Value = "1", Kind = RegistryValueKind.String };
+            platform.Preferences[WindowsPreferenceId.TaskbarAlignment]=new WindowsPreferenceSnapshot("unknown",true,true,false,false);
             Check(windows.Apply(TweakId.Taskbar, "TaskbarAl").State == TweakState.Unknown && Equals(platform.Values[TweakSettings.Advanced + "/TaskbarAl"].Value, "1"),
-                "An unexpected registry type must never be overwritten as an assumed default.");
+                "An unexpected broker type must stay unknown; a legacy preference must not be used as a fallback.");
             Check(windows.Inspect(TweakId.WindowsUpdate).Single(p => p.Key == "IsExpedited").State == TweakState.Applied,
                 "A known disabled Windows default must not cause an unnecessary administrative write.");
             var start = windows.Inspect(TweakId.Start);
-            windows.Apply(TweakId.Start, "VisiblePlaces");
-            var folderSetting = TweakSettings.All.Single(s => s.Name == "VisiblePlaces");
-            Check(((byte[])platform.Values[folderSetting.Path + "/VisiblePlaces"].Value).Length == 32, "Start folders must contain exactly Settings and Explorer GUIDs.");
+            var folderSettings=TweakSettings.All.Where(s=>s.Id==TweakId.Start&&s.Key.StartsWith("place-")).ToArray();
+            foreach(var folder in folderSettings)windows.Apply(TweakId.Start,folder.Key);
+            Check(folderSettings.Length==9&&folderSettings.Count(s=>(bool)s.PreferenceTarget)==2&&
+                folderSettings.All(s=>Equals(platform.ReadWindowsPreference(s.Preference.Value).Value,s.PreferenceTarget))&&platform.Writes==0,
+                "Start folders must use nine independent broker switches, with only Settings and Explorer enabled.");
             platform.UpdateManagedValue = true;
             Check(windows.Inspect(TweakId.WindowsUpdate).Where(p => p.Key != "search-updates" && p.Key != "microsoft-update").All(p => p.State == TweakState.Unavailable), "Managed update preferences must not be overwritten.");
             platform.Values[@"Software\Policies\Microsoft\Windows\System/AllowClipboardHistory"] = new RegistryDatum { Exists = true, Value = 0, Kind = RegistryValueKind.DWord };
@@ -150,6 +161,34 @@ namespace JustEnoughTools.Tests
             Check(trayBackend.Inspect(TweakId.Taskbar).Single(part => part.Key == "PenWorkspaceButtonDesiredVisibility").State == TweakState.Applied,
                 "An absent legacy pen value must not override the broker's actual enabled hardware-dependent default.");
 
+            var legacyPlatform=new FakePlatform {BrokerCertifiedValue=false};var legacyBackend=new WindowsTweakBackend(legacyPlatform);
+            Check(legacyBackend.Apply(TweakId.Keyboard,"keyboard-delay").State==TweakState.Applied&&legacyBackend.Apply(TweakId.Mouse,"mouse").State==TweakState.Applied,
+                "Documented SPI settings must remain available when the new broker mapping is not certified.");
+            Check(legacyBackend.Apply(TweakId.StickyKeys,"sticky").State==TweakState.Applied,"An empty broker child set must not falsely mark native Sticky Keys applied.");
+            var legacyClipboard=legacyBackend.Apply(TweakId.Clipboard,"EnableClipboardHistory");
+            Check(legacyClipboard.State==TweakState.Deferred&&legacyPlatform.Writes==1&&legacyPlatform.PreferenceWrites==0,
+                "A previously certified legacy preference must survive migration without enabling an unverified broker.");
+            Check(legacyBackend.Inspect(TweakId.Start).Any(p=>p.Key=="VisiblePlaces"),"Legacy Start folders must retain their certified fixed format.");
+            var legacyUpdate=legacyBackend.Inspect(TweakId.WindowsUpdate).Single(p=>p.Key=="IsContinuousInnovationOptedIn");
+            Check(legacyUpdate.Administrator&&legacyUpdate.State==TweakState.Pending,"Legacy HKLM update preferences must preserve their administrative scope.");
+
+            var brokerPlatform=new FakePlatform();var brokerBackend=new WindowsTweakBackend(brokerPlatform);
+            Check(brokerBackend.Apply(TweakId.Taskbar,"widgets").State==TweakState.Applied && brokerPlatform.PreferenceWrites==1 && brokerPlatform.Writes==0,
+                "Widgets must use its broker, without protected registry writes or policies.");
+            brokerBackend.Apply(TweakId.Taskbar,"widgets");Check(brokerPlatform.PreferenceWrites==1,"Confirmed Widgets must not be applied again.");
+            brokerPlatform.Preferences[WindowsPreferenceId.TaskbarBadges]=new WindowsPreferenceSnapshot(false,true,true,true,false);
+            Check(brokerBackend.Apply(TweakId.Taskbar,"TaskbarBadges").State==TweakState.Unavailable&&brokerPlatform.PreferenceWrites==1,
+                "A taskbar policy must never fall back to the old native setter.");
+            brokerPlatform.Preferences[WindowsPreferenceId.TaskbarSearch]=new WindowsPreferenceSnapshot(2,true,true,false,true);
+            Check(brokerBackend.Apply(TweakId.Taskbar,"SearchboxTaskbarMode").State==TweakState.Running&&brokerPlatform.PreferenceWrites==1,
+                "An updating list cannot be changed concurrently.");
+            brokerPlatform.Preferences[WindowsPreferenceId.StartSettings]=new WindowsPreferenceSnapshot(null,false,false,false,false);
+            Check(brokerBackend.Inspect(TweakId.Start).Single(p=>p.Key=="place-StartSettings").State==TweakState.Unavailable,
+                "An unavailable child must be skipped independently of other Start folders.");
+            foreach(var setting in TweakSettings.All.Where(s=>s.Preference.HasValue))WindowsPreferenceCatalog.Get(setting.Preference.Value).Validate(setting.PreferenceTarget);
+            Check(TweakSettings.All.Where(s=>s.Id==TweakId.WindowsUpdate).All(s=>!s.Administrator),"User update broker settings must stay in the original user process.");
+            Check(!TweakCompatibility.Allows("26300.9711","broker:9999")&&!TweakCompatibility.Allows("26300.9712","broker:Widgets"),"Unknown identifiers/builds must not gain broker certification.");
+
             foreach (var ids in new[] { new[] { TweakId.Indexing }, new[] { TweakId.Indexing, TweakId.BitLocker, TweakId.WindowsUpdate, TweakId.Startup } })
                 Check(TweakWorker.DecodeRequest(TweakWorker.EncodeRequest(ids)).SequenceEqual(ids), "Fixed worker requests must round trip.");
             MustFail(() => TweakWorker.EncodeRequest(new[] { TweakId.Mouse }), "Administrative IPC must reject user operations.");
@@ -190,12 +229,14 @@ namespace JustEnoughTools.Tests
         }
         sealed class FakePlatform : ITweakPlatform
         {
+            internal bool BrokerCertifiedValue=true;
             internal bool CertifiedValue = true, UpdateManagedValue, Lie, HasBatteryValue, TrayReadFails, IgnoreTrayWrites;
-            internal int Searches, Writes, TrayWrites, TrayReads;
+            internal int Searches, Writes, TrayWrites, TrayReads, PreferenceWrites;
             internal Dictionary<TrayPreferenceKind, TrayPreferenceSnapshot> TrayStates = new Dictionary<TrayPreferenceKind, TrayPreferenceSnapshot>();
+            internal Dictionary<WindowsPreferenceId,WindowsPreferenceSnapshot> Preferences=new Dictionary<WindowsPreferenceId,WindowsPreferenceSnapshot>();
             internal Dictionary<string, RegistryDatum> Values = new Dictionary<string, RegistryDatum>();
             readonly HashSet<string> applied = new HashSet<string>();
-            public bool Certified(string feature) { return CertifiedValue; }
+            public bool Certified(string feature) { return CertifiedValue&&(!feature.StartsWith("broker:")||BrokerCertifiedValue); }
             public bool IsWindows11 { get { return true; } }
             public bool HasBattery { get { return HasBatteryValue; } }
             public bool UpdateManaged { get { return UpdateManagedValue; } }
@@ -203,6 +244,13 @@ namespace JustEnoughTools.Tests
             public void Write(bool machine, string path, string name, object value, RegistryValueKind kind) { Writes++; Values[path + "/" + name] = new RegistryDatum { Exists = true, Value = value, Kind = kind }; }
             public TrayPreferenceSnapshot ReadTrayPreference(TrayPreferenceKind kind) { TrayReads++; if (TrayReadFails) throw new InvalidOperationException("broker unavailable"); TrayPreferenceSnapshot value; return TrayStates.TryGetValue(kind, out value) ? value : new TrayPreferenceSnapshot(false, true, true, false, false); }
             public void SetTrayPreference(TrayPreferenceKind kind, bool value) { TrayWrites++; if (!IgnoreTrayWrites) TrayStates[kind] = new TrayPreferenceSnapshot(value, true, true, false, false); }
+            public WindowsPreferenceSnapshot ReadWindowsPreference(WindowsPreferenceId id) {
+                WindowsPreferenceSnapshot state;if(Preferences.TryGetValue(id,out state))return state;
+                var definition=WindowsPreferenceCatalog.Get(id);object value=definition.PropertyType==5?(object)(id==WindowsPreferenceId.KeyboardDelay?3u:0u):definition.PropertyType==4?(object)0:
+                    id==WindowsPreferenceId.MouseAcceleration||id==WindowsPreferenceId.Widgets?(object)true:false;
+                return new WindowsPreferenceSnapshot(value,true,true,false,false);
+            }
+            public void SetWindowsPreference(WindowsPreferenceId id,object value){PreferenceWrites++;if(!Lie)Preferences[id]=new WindowsPreferenceSnapshot(value,true,true,false,false);}
             public int ReadNative(string key) { return applied.Contains(key) ? 1 : 0; }
             public string ApplyNative(string key) { if (!Lie) applied.Add(key); if (key == "search-updates") Searches++; return "test"; }
             public IReadOnlyList<TweakPart> InspectStartup() { return new[] { new TweakPart("startup", TweakState.Applied) }; }

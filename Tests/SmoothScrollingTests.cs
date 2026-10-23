@@ -10,16 +10,20 @@ public static class SmoothScrollingTests
 {
     public static int RunAll()
     {
+        foreach (bool animated in new[] { false, true }) Run(animated);
+        return 2;
+    }
+    static void Run(bool animated)
+    {
         var viewer = new ScrollViewer { Width = 400, Height = 300, Content = new Border { Height = 3200 } };
         viewer.Measure(new Size(400, 300));
         viewer.Arrange(new Rect(0, 0, 400, 300));
         viewer.UpdateLayout();
-        var controller = SmoothScrollingController.Attach(viewer);
+        var controller = SmoothScrollingController.Attach(viewer, () => animated);
         void Check(bool condition, string message) { if (!condition) throw new InvalidOperationException(message); }
         void Frames(int count) {
             for (int i = 0; i < count; i++) { controller.AdvanceFrame(1000d / 60); viewer.UpdateLayout(); }
         }
-        bool animated = SystemParameters.ClientAreaAnimation;
         try {
             Check(ReferenceEquals(controller, SmoothScrollingController.Attach(viewer)), "Duplicate controller");
             Check(!controller.ScrollByWheelDelta(0), "Zero delta consumed");
@@ -71,6 +75,5 @@ public static class SmoothScrollingTests
             Check(!(presenter.RenderTransform is TransformGroup), "Dispose left spring transform");
             Check(!controller.ScrollByWheelDelta(-120), "Disposed controller consumed input");
         } finally { controller.Dispose(); }
-        return 1;
     }
 }

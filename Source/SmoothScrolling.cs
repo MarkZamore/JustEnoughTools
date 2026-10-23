@@ -17,10 +17,13 @@ public sealed class SmoothScrollingController : IDisposable
         "Controller", typeof(SmoothScrollingController), typeof(SmoothScrollingController), new PropertyMetadata(null));
 
     public static SmoothScrollingController Attach(ScrollViewer viewer)
+        => Attach(viewer, () => SystemParameters.ClientAreaAnimation);
+
+    internal static SmoothScrollingController Attach(ScrollViewer viewer, Func<bool> animationsEnabled)
     {
         var controller = (SmoothScrollingController)viewer.GetValue(ControllerProperty);
         if (controller == null) {
-            controller = new SmoothScrollingController(viewer);
+            controller = new SmoothScrollingController(viewer, animationsEnabled);
             viewer.SetValue(ControllerProperty, controller);
         }
         return controller;
@@ -29,6 +32,7 @@ public sealed class SmoothScrollingController : IDisposable
     public const double WheelStep = 36;
     public const double TimeConstantMilliseconds = 75;
     readonly ScrollViewer viewer;
+    readonly Func<bool> animationsEnabled;
     readonly List<double> requestedOffsets = new List<double>();
     bool disposed;
     long lastTimestamp;
@@ -44,9 +48,13 @@ public sealed class SmoothScrollingController : IDisposable
     public double BounceOffset { get { return bounceTransform.Y; } }
 
     public SmoothScrollingController(ScrollViewer scrollViewer)
+        : this(scrollViewer, () => SystemParameters.ClientAreaAnimation) { }
+
+    internal SmoothScrollingController(ScrollViewer scrollViewer, Func<bool> animationsEnabled)
     {
         if (scrollViewer == null) throw new ArgumentNullException("scrollViewer");
         viewer = scrollViewer;
+        this.animationsEnabled = animationsEnabled ?? throw new ArgumentNullException(nameof(animationsEnabled));
         position = TargetOffset = viewer.VerticalOffset;
         viewer.PreviewMouseWheel += OnWheel;
         viewer.PreviewMouseDown += OnManualMouse;
@@ -59,10 +67,11 @@ public sealed class SmoothScrollingController : IDisposable
     public bool ScrollByWheelDelta(int delta)
     {
         if (disposed || delta == 0 || viewer.ScrollableHeight <= 0) return false;
-        double raw = (IsAnimating ? TargetOffset : viewer.VerticalOffset) - delta * WheelStep / 120.0;
+        double raw = (IsAnimating || requestedOffsets.Count != 0 ? TargetOffset : viewer.VerticalOffset) - delta * WheelStep / 120.0;
         double target = Clamp(raw);
-        if (!SystemParameters.ClientAreaAnimation) {
-            Cancel(); TargetOffset = target; RequestOffset(target); return true;
+        if (!animationsEnabled()) {
+            StopRendering(); bounceTransform.Y = 0; bounceVelocity = 0; pendingBounce = 0;
+            position = TargetOffset = target; RequestOffset(target); return true;
         }
         if (raw != target) {
             double impulse = -(raw - target) * 8;

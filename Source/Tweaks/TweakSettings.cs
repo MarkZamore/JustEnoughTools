@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using Microsoft.Win32;
@@ -14,6 +14,9 @@ namespace JustEnoughTools.Tweaks
         internal object DefaultValue;
         internal RegistryValueKind Kind;
         internal bool Administrator;
+        internal WindowsPreferenceId? Preference;
+        internal object PreferenceTarget;
+        internal TweakSetting Legacy() {var copy=(TweakSetting)MemberwiseClone();copy.Preference=null;copy.Administrator=Id==TweakId.WindowsUpdate;return copy;}
     }
 
     internal static class TweakSettings
@@ -21,7 +24,8 @@ namespace JustEnoughTools.Tweaks
         internal const string Advanced = @"Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced";
         internal const string Start = @"Software\Microsoft\Windows\CurrentVersion\Start";
         internal const string Update = @"SOFTWARE\Microsoft\WindowsUpdate\UX\Settings";
-        internal static readonly TweakSetting[] All = Create().ToArray();
+        static readonly Lazy<TweakSetting[]> Catalog = new Lazy<TweakSetting[]>(() => Create().ToArray());
+        internal static TweakSetting[] All { get { return Catalog.Value; } }
         static IEnumerable<TweakSetting> Create()
         {
             yield return S(TweakId.Clipboard, @"Software\Microsoft\Clipboard", "EnableClipboardHistory", 1, "clipboard");
@@ -29,8 +33,12 @@ namespace JustEnoughTools.Tweaks
                 yield return Pair(TweakId.Start, Start, pair, "new-start");
             foreach (var pair in new[] { "Start_TrackDocs=0", "Start_IrisRecommendations=0", "Start_AccountNotifications=0" })
                 yield return Pair(TweakId.Start, Advanced, pair, "start");
-            yield return S(TweakId.Start, Start, "VisiblePlaces", new Guid("52730886-51AA-4243-9F7B-2776584659D4").ToByteArray()
-                .Concat(new Guid("148A24BC-D60C-4289-A080-6ED9BBA24882").ToByteArray()).ToArray(), "start");
+            yield return B(TweakId.Start, "jump-lists", WindowsPreferenceId.StartJumpLists, false, "Скрыть недавние элементы списков переходов");
+            yield return B(TweakId.Start, "recent-items", WindowsPreferenceId.StartRecentItems, false, "Скрыть недавние элементы Проводника");
+            foreach(var place in new[] { WindowsPreferenceId.StartSettings,WindowsPreferenceId.StartExplorer,WindowsPreferenceId.StartDocuments,
+                WindowsPreferenceId.StartDownloads,WindowsPreferenceId.StartMusic,WindowsPreferenceId.StartPictures,WindowsPreferenceId.StartVideos,
+                WindowsPreferenceId.StartNetwork,WindowsPreferenceId.StartUserFolder })
+                yield return B(TweakId.Start,"place-"+place,place,place==WindowsPreferenceId.StartSettings||place==WindowsPreferenceId.StartExplorer,"Папки рядом с питанием");
             foreach (var pair in new[] { "TaskbarAl=0", "ShowTaskViewButton=0", "TaskbarBadges=1", "TaskbarFlashing=1", "MMTaskbarEnabled=1", "MMTaskbarMode=2", "TaskbarGlomLevel=0", "MMTaskbarGlomLevel=0", "TaskbarSn=1", "TaskbarSd=1", "ExpandableTaskbar=0" })
                 yield return Pair(TweakId.Taskbar, Advanced, pair, "taskbar");
             foreach (var pair in new[] { "TaskbarLocation=3", "TaskbarSize=0", "IconSizePreference=2" })
@@ -41,23 +49,64 @@ namespace JustEnoughTools.Tweaks
             yield return S(TweakId.Taskbar, @"Software\Microsoft\Touchpad", "TouchpadDesiredVisibility", 0, "taskbar");
             yield return S(TweakId.Taskbar, @"Software\Classes\Local Settings\Software\Microsoft\Windows\CurrentVersion\TrayNotify", "SystemTrayChevronVisibility", 1, "tray");
             yield return S(TweakId.Taskbar, Advanced, "IsEnabled", 0, "resume");
+            yield return B(TweakId.Taskbar,"widgets",WindowsPreferenceId.Widgets,false,"Скрыть мини-приложения");
+            yield return B(TweakId.Keyboard,"keyboard-delay",WindowsPreferenceId.KeyboardDelay,0u,"Минимальная задержка повтора клавиш");
+            yield return B(TweakId.Keyboard,"keyboard-speed",WindowsPreferenceId.KeyboardRepeatRate,31u,"Максимальная скорость повтора клавиш");
+            yield return B(TweakId.Mouse,"mouse",WindowsPreferenceId.MouseAcceleration,false,"Отключить ускорение мыши");
+            foreach(var sticky in new[]{WindowsPreferenceId.StickyHotkey,WindowsPreferenceId.StickyIndicator,WindowsPreferenceId.StickyLock,
+                WindowsPreferenceId.StickyTwoKeysOff,WindowsPreferenceId.StickySound,WindowsPreferenceId.StickyEnabled})
+                yield return B(TweakId.StickyKeys,"sticky-"+sticky,sticky,false,"Отключить залипание клавиш и его переключатели");
             foreach (var pair in new[] { "ShowSystrayDateTimeValueName=1", "ShowClockInNotificationCenter=1" })
                 yield return Pair(TweakId.Clock, Advanced, pair, "clock");
             foreach (var number in new[] { "1", "2" })
                 yield return S(TweakId.Clock, @"Control Panel\TimeDate\AdditionalClocks\" + number, "Enable", 0, "clock");
             foreach (var pair in new[] { "IsContinuousInnovationOptedIn=1", "AllowMUUpdateService=1", "IsExpedited=0", "AllowAutoWindowsUpdateDownloadOverMeteredNetwork=1", "RestartNotificationsAllowed2=1" })
             {
-                var setting = Pair(TweakId.WindowsUpdate, Update, pair, "windows-update"); setting.Administrator = true; yield return setting;
+                var setting = Pair(TweakId.WindowsUpdate, Update, pair, "windows-update"); yield return setting;
             }
         }
+        internal static TweakSetting LegacyFolders() {return S(TweakId.Start,Start,"VisiblePlaces",
+            new Guid("52730886-51AA-4243-9F7B-2776584659D4").ToByteArray().Concat(new Guid("148A24BC-D60C-4289-A080-6ED9BBA24882").ToByteArray()).ToArray(),"start");}
         static TweakSetting Pair(TweakId id, string path, string value, string capability)
         { var pair = value.Split('='); return S(id, path, pair[0], int.Parse(pair[1]), capability); }
         static TweakSetting S(TweakId id, string path, string name, object value, string capability)
         {
-            return new TweakSetting { Id = id, Key = name + (path.StartsWith("Control Panel") ? path.Substring(path.Length - 1) : ""),
+            var setting = new TweakSetting { Id = id, Key = name + (path.StartsWith("Control Panel") ? path.Substring(path.Length - 1) : ""),
                 Path = path, Name = name, Title = Title(name) + (name == "Enable" ? " " + path.Substring(path.Length - 1) : ""),
                 Target = value, DefaultValue = Default(name), Kind = value is byte[] ? RegistryValueKind.Binary : RegistryValueKind.DWord, Capability = capability };
+            WindowsPreferenceId preference;
+            if(BrokerMapping.TryGetValue(name,out preference)) {
+                setting.Preference=preference;
+                int target=Convert.ToInt32(value);
+                setting.PreferenceTarget=WindowsPreferenceCatalog.Get(preference).PropertyType==11?(object)(target!=0):
+                    name=="MMTaskbarMode"||name=="TaskbarLocation"?0:name=="IconSizePreference"?1:target;
+            }
+            return setting;
         }
+        static TweakSetting B(TweakId id,string key,WindowsPreferenceId preference,object target,string title)
+        {return new TweakSetting {Id=id,Key=key,Name=key,Title=title,Preference=preference,PreferenceTarget=target};}
+        static readonly Dictionary<string,WindowsPreferenceId> BrokerMapping = new Dictionary<string,WindowsPreferenceId>(StringComparer.Ordinal)
+        {
+            {"EnableClipboardHistory",WindowsPreferenceId.ClipboardHistory},{"ShowPinnedSection",WindowsPreferenceId.StartPinned},
+            {"ShowRecentSection",WindowsPreferenceId.StartRecent},{"ShowAllAppsSection",WindowsPreferenceId.StartAll},
+            {"ShowRecentList",WindowsPreferenceId.StartRecentApps},{"StartMenuSize",WindowsPreferenceId.StartSize},
+            {"HideUserInformation",WindowsPreferenceId.StartHideUser},{"Start_TrackDocs",WindowsPreferenceId.StartSuggestedFiles},
+            {"Start_IrisRecommendations",WindowsPreferenceId.StartRecommendations},{"Start_AccountNotifications",WindowsPreferenceId.StartAccountNotifications},
+            {"TaskbarAl",WindowsPreferenceId.TaskbarAlignment},{"ShowTaskViewButton",WindowsPreferenceId.TaskView},
+            {"TaskbarBadges",WindowsPreferenceId.TaskbarBadges},{"TaskbarFlashing",WindowsPreferenceId.TaskbarFlashing},
+            {"MMTaskbarEnabled",WindowsPreferenceId.TaskbarMultiMonitor},{"MMTaskbarMode",WindowsPreferenceId.TaskbarMultiMonitorMode},
+            {"TaskbarGlomLevel",WindowsPreferenceId.TaskbarGrouping},{"MMTaskbarGlomLevel",WindowsPreferenceId.TaskbarSecondaryGrouping},
+            {"TaskbarSn",WindowsPreferenceId.TaskbarShareWindow},{"TaskbarSd",WindowsPreferenceId.TaskbarDesktopCorner},
+            {"ExpandableTaskbar",WindowsPreferenceId.TabletTaskbar},{"TaskbarLocation",WindowsPreferenceId.TaskbarPosition},
+            {"TaskbarSize",WindowsPreferenceId.TaskbarSize},{"IconSizePreference",WindowsPreferenceId.TaskbarSmallIcons},
+            {"SearchboxTaskbarMode",WindowsPreferenceId.TaskbarSearch},{"EmojiAndMoreIconVisibilityState",WindowsPreferenceId.EmojiPanel},
+            {"TipbandDesiredVisibility",WindowsPreferenceId.TouchKeyboard},{"TouchpadDesiredVisibility",WindowsPreferenceId.VirtualTouchpad},
+            {"SystemTrayChevronVisibility",WindowsPreferenceId.HiddenIcons},{"IsEnabled",WindowsPreferenceId.Resume},
+            {"ShowSystrayDateTimeValueName",WindowsPreferenceId.ClockVisible},{"ShowClockInNotificationCenter",WindowsPreferenceId.NotificationClock},
+            {"IsContinuousInnovationOptedIn",WindowsPreferenceId.UpdateEarly},{"AllowMUUpdateService",WindowsPreferenceId.UpdateMicrosoft},
+            {"IsExpedited",WindowsPreferenceId.UpdateExpedited},{"AllowAutoWindowsUpdateDownloadOverMeteredNetwork",WindowsPreferenceId.UpdateMetered},
+            {"RestartNotificationsAllowed2",WindowsPreferenceId.UpdateRestartNotifications}
+        };
         static string Title(string name)
         {
             switch (name)
@@ -153,6 +202,8 @@ namespace JustEnoughTools.Tweaks
         void Write(bool machine, string path, string name, object value, RegistryValueKind kind);
         TrayPreferenceSnapshot ReadTrayPreference(TrayPreferenceKind kind);
         void SetTrayPreference(TrayPreferenceKind kind, bool enabled);
+        WindowsPreferenceSnapshot ReadWindowsPreference(WindowsPreferenceId id);
+        void SetWindowsPreference(WindowsPreferenceId id, object value);
         int ReadNative(string key);
         string ApplyNative(string key);
         IReadOnlyList<TweakPart> InspectStartup();
@@ -164,14 +215,26 @@ namespace JustEnoughTools.Tweaks
         readonly ITweakPlatform system;
         bool searched;
         internal WindowsTweakBackend(ITweakPlatform system) { this.system = system; }
+        IEnumerable<TweakSetting> EffectiveSettings(TweakId id)
+        {
+            foreach(var setting in TweakSettings.All.Where(s=>s.Id==id)) {
+                if(setting.Preference.HasValue&&!system.Certified("broker:"+setting.Preference.Value)) {
+                    if(id==TweakId.Keyboard||id==TweakId.Mouse||id==TweakId.StickyKeys||setting.Key.StartsWith("place-",StringComparison.Ordinal))continue;
+                    if(setting.Path!=null){yield return setting.Legacy();continue;}
+                }
+                yield return setting;
+            }
+            if(id==TweakId.Start&&!system.Certified("broker:"+WindowsPreferenceId.StartSettings))yield return TweakSettings.LegacyFolders();
+        }
         public IReadOnlyList<TweakPart> Inspect(TweakId id)
         {
             var result = new List<TweakPart>();
             if (!system.IsWindows11) return new[] { new TweakPart("os", TweakState.Unavailable, reason: "Требуется Windows 11.") };
-            foreach (var setting in TweakSettings.All.Where(s => s.Id == id))
+            foreach (var setting in EffectiveSettings(id))
             {
                 try
                 {
+                    if(setting.Preference.HasValue) {result.Add(InspectPreference(setting));continue;}
                     if (!system.Certified(setting.Capability + ":" + setting.Name)) { result.Add(Unverified(setting.Key, setting.Title)); continue; }
                     if (id == TweakId.Battery && !system.HasBattery) { result.Add(new TweakPart(setting.Key, TweakState.Unavailable, reason: "Батарея не обнаружена.")); continue; }
                     if (id == TweakId.WindowsUpdate && system.UpdateManaged) { result.Add(new TweakPart(setting.Key, TweakState.Unavailable, reason: "Параметры обновления управляются политикой.")); continue; }
@@ -192,8 +255,15 @@ namespace JustEnoughTools.Tweaks
             }
             foreach (var key in NativeKeys(id))
             {
+                if(result.Any(p=>p.Key==key))continue;
                 try
                 {
+                    if(key=="sticky") {
+                        if(result.Count!=0&&result.All(p=>p.State==TweakState.Applied)) {result.Add(new TweakPart(key,TweakState.Applied,reason:"Уже настроено."));continue;}
+                        if(result.Any(p=>p.State==TweakState.Unknown||(p.Reason??"").Contains("политик"))) {
+                            result.Add(new TweakPart(key,TweakState.Unavailable,reason:"Не удалось подтвердить доступность настройки."));continue;
+                        }
+                    }
                     if (key == "IsBatteryPercentageEnabled" || key == "ShowSecondsInSystemClock" || key == "PenWorkspaceButtonDesiredVisibility")
                     {
                         string capability = key == "IsBatteryPercentageEnabled" ? "battery:" : key == "ShowSecondsInSystemClock" ? "clock:" : "taskbar:";
@@ -220,8 +290,21 @@ namespace JustEnoughTools.Tweaks
                 }
                 catch (Exception error) { result.Add(new TweakPart(key, TweakState.Unknown, reason: error.Message)); }
             }
-            if (id == TweakId.Taskbar) result.Add(new TweakPart("widgets", TweakState.Unavailable, reason: "Мини-приложения: изменение защищённого параметра не выполняется."));
             return result;
+        }
+        TweakPart InspectPreference(TweakSetting setting)
+        {
+            if(!system.Certified("broker:"+setting.Preference.Value))return Unverified(setting.Key,setting.Title);
+            if(setting.Id==TweakId.Clipboard&&BlockedClipboard()||ShellPolicyBlocks(setting)||setting.Id==TweakId.WindowsUpdate&&system.UpdateManaged)
+                return new TweakPart(setting.Key,TweakState.Unavailable,reason:"Настройка управляется политикой Windows.");
+            var state=system.ReadWindowsPreference(setting.Preference.Value);
+            if(!state.IsApplicable)return new TweakPart(setting.Key,TweakState.Unavailable,reason:"Настройка недоступна в этой системе.");
+            WindowsPreferenceCatalog.Get(setting.Preference.Value).Validate(state.Value);
+            var result=state.IsUpdating?TweakState.Running:Equals(state.Value,setting.PreferenceTarget)?TweakState.Applied:
+                state.IsSetByGroupPolicy||!state.IsEnabled?TweakState.Unavailable:TweakState.Pending;
+            return new TweakPart(setting.Key,result,setting.Administrator,
+                state.IsSetByGroupPolicy?"Настройка управляется политикой Windows.":result==TweakState.Applied?"Уже настроено.":
+                result==TweakState.Running?"Настройка изменяется Windows.":result==TweakState.Pending?"Можно применить.":"Настройка временно недоступна.");
         }
         bool BlockedClipboard()
         {
@@ -290,8 +373,8 @@ namespace JustEnoughTools.Tweaks
                 case TweakId.Indexing: return new[] { "indexing" };
                 case TweakId.BitLocker: return new[] { "bitlocker" };
                 case TweakId.Keyboard: return new[] { "keyboard-delay", "keyboard-speed", "caret" };
-                case TweakId.StickyKeys: return new[] { "sticky" };
                 case TweakId.Mouse: return new[] { "mouse" };
+                case TweakId.StickyKeys: return new[] { "sticky" };
                 case TweakId.Theme: return new[] { "theme" };
                 case TweakId.Taskbar: return new[] { "autohide", "PenWorkspaceButtonDesiredVisibility" };
                 case TweakId.Battery: return new[] { "IsBatteryPercentageEnabled" };
@@ -307,7 +390,7 @@ namespace JustEnoughTools.Tweaks
             if (before == null) throw new ArgumentOutOfRangeException(nameof(part));
             if (before.State != TweakState.Pending) return before;
             if (id == TweakId.Startup) return system.ApplyStartup(part);
-            var setting = TweakSettings.All.SingleOrDefault(s => s.Id == id && s.Key == part);
+            var setting = EffectiveSettings(id).SingleOrDefault(s => s.Key == part);
             if (setting != null)
             {
                 if (setting.Name == "MMTaskbarMode")
@@ -352,6 +435,12 @@ namespace JustEnoughTools.Tweaks
         }
         TweakPart Store(TweakSetting setting)
         {
+                if(setting.Preference.HasValue) {
+                    system.SetWindowsPreference(setting.Preference.Value,setting.PreferenceTarget);
+                    var verified=InspectPreference(setting);
+                    if(verified.State!=TweakState.Applied)throw new InvalidOperationException("Windows не подтвердила изменение настройки.");
+                    return new TweakPart(setting.Key,TweakState.Applied,setting.Administrator,"Настройка применена и проверена.");
+                }
                 system.Write(setting.Administrator, setting.Path, setting.Name, setting.Target, setting.Kind);
                 var after = system.Read(setting.Administrator, setting.Path, setting.Name);
                 if (!after.Exists || after.Kind != setting.Kind || !TweakSettings.Equal(after.Value, setting.Target))

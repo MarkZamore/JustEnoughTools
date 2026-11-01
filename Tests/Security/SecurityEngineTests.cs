@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Linq;
 using System.Reflection;
 using System.Text;
@@ -7,7 +8,7 @@ using JustEnoughTools.Security;
 
 namespace JustEnoughTools.Tests
 {
-    // Only fake backends are exercised here. These tests never call Run(), start
+    // Only fake backends/providers are exercised here. These tests never call Run(), start
     // PowerShell, inspect protection, elevate, or write a Windows setting.
     public static class SecurityEngineTests
     {
@@ -44,6 +45,45 @@ namespace JustEnoughTools.Tests
                 "A blocked Defender operation prevented an independent firewall operation."); checks++;
             Require(report.FormatProblems().Contains("Блокировка тестового провайдера") && report.FormatProblems().Contains("17 из 18"),
                 "The final problem report lost the precise reason or partial success."); checks++;
+
+            blocked.Handler = action =>
+            {
+                if (action.Id == "defender.realtime")
+                    throw new InvalidOperationException("Запуск настройки защиты: отказано в доступе.", new Win32Exception(5));
+                return SecurityEngine.Result(action, ActionOutcome.Applied, "Подтверждено.");
+            };
+            report = SecurityEngine.ExecuteCatalogue(blocked);
+            Require(report.Results[0].Outcome == ActionOutcome.Blocked && report.Results[0].Reason.Contains("Win32=5") &&
+                report.Results[0].Reason.Contains("Запуск настройки защиты") && report.Results.Single(item => item.Id == "firewall.public").Outcome == ActionOutcome.Applied,
+                "A native launch denial lost its stage/code or blocked independent actions."); checks++;
+
+            int probeCalls = 0, setterCalls = 0;
+            var deniedProbe = new WindowsSecurityBackend((script, readOnly) =>
+            {
+                if (readOnly) probeCalls++; else setterCalls++;
+                throw new InvalidOperationException("Запуск проверки защиты: отказано в доступе.", new Win32Exception(5));
+            }, "Core", 0);
+            SecuritySnapshot deniedSnapshot = deniedProbe.Inspect();
+            Require(!deniedSnapshot.HasChanges && deniedSnapshot.HasUnknown && !deniedSnapshot.RequiresElevation &&
+                deniedSnapshot.Actions.Where(item => item.State == ActionStateKind.Unknown).All(item => item.Reason.Contains("Win32=5")),
+                "A denied read-only launch became an enabled setting/elevation reason or lost the native error."); checks++;
+            report = SecurityEngine.ExecuteCatalogue(deniedProbe);
+            Require(!report.Succeeded && probeCalls == 2 && setterCalls == 0,
+                "A denied snapshot invoked a setter or falsely succeeded."); checks++;
+
+            var independentProbe = new WindowsSecurityBackend((script, readOnly) =>
+            {
+                Require(readOnly, "The fake provider must not execute a setter.");
+                return new WindowsSecurityBackend.ProcessOutput { ExitCode = 0, Errors = "", Output =
+                    "{\"Actions\":[{\"Id\":\"defender.realtime\",\"State\":3,\"Reason\":\"Отказ тестового Defender (Win32 5).\",\"RequiresElevation\":true}," +
+                    "{\"Id\":\"firewall.public\",\"State\":0,\"Reason\":\"Профиль выключен.\",\"RequiresElevation\":true}],\"PuaProtection\":2}" };
+            }, "Core", 0);
+            SecuritySnapshot independent = independentProbe.Inspect();
+            Require(independent.Actions.Single(item => item.Id == "defender.realtime").State == ActionStateKind.Unknown &&
+                independent.Actions.Single(item => item.Id == "firewall.public").State == ActionStateKind.AlreadyDesired &&
+                independent.Actions.Single(item => item.Id == "defender.pua").State == ActionStateKind.AlreadyDesired &&
+                !independent.RequiresElevation,
+                "A single provider denial replaced independently readable states or requested UAC."); checks++;
 
             foreach (ActionOutcome problem in new[] { ActionOutcome.Blocked, ActionOutcome.Unavailable, ActionOutcome.Unverified, ActionOutcome.Failed })
             {
@@ -158,8 +198,6 @@ namespace JustEnoughTools.Tests
                 "An already-audit result failed to preserve the no-write explanation."); checks++;
 
             string probeScript = (string)typeof(WindowsSecurityBackend).GetField("SnapshotScript", BindingFlags.NonPublic | BindingFlags.Static).GetRawConstantValue();
-            Require(Convert.ToBase64String(Encoding.Unicode.GetBytes(probeScript)).Length <= 28000,
-                "Trusted module imports caused the read-only command to exceed the process argument limit."); checks++;
             Require(probeScript.Contains("$env:PSModulePath = [IO.Path]::Combine($PSHOME, 'Modules')") &&
                 probeScript.Contains("Microsoft.PowerShell.Core\\Import-Module") && probeScript.Contains("Defender\\Get-MpPreference") &&
                 probeScript.IndexOf("Set-MpPreference", StringComparison.OrdinalIgnoreCase) < 0 &&

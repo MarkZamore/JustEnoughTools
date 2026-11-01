@@ -7,15 +7,20 @@ namespace JustEnoughTools.Updates
     public sealed class UpdateStatus
     {
         public UpdateStatus(string text, double? fraction = null, bool ready = false)
+            : this(text, fraction, ready, null) { }
+
+        internal UpdateStatus(string text, double? fraction, bool ready, string details)
         {
             Text = text;
             Fraction = fraction;
             Ready = ready;
+            Details = details;
         }
 
         public string Text { get; }
         public double? Fraction { get; }
         public bool Ready { get; }
+        public string Details { get; }
     }
 
     [DataContract]

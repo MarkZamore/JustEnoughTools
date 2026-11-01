@@ -19,9 +19,24 @@ using JustEnoughTools.Security;
 using JustEnoughTools.Export;
 using JustEnoughTools.Actions;
 using JustEnoughTools.Tweaks;
+using JustEnoughTools.Platform;
 
 namespace JustEnoughTools
 {
+    internal delegate bool ScheduleUpdate(bool restart, out string error);
+
+    // UI tests supply fixed results without opening file dialogs, running system
+    // setters or handing an update to a real child process.
+    internal sealed class MainWindowOperations
+    {
+        internal Func<Task<TaskbarResult>> ApplyTaskbar;
+        internal Func<bool, string> SelectExportPath;
+        internal Action<string, IconSelection, bool, FixedAction> SaveExport;
+        internal Func<bool> HasPreparedUpdate;
+        internal Func<bool> IsOperationInProgress;
+        internal ScheduleUpdate ScheduleInstall;
+    }
+
     public sealed class MainWindowController
     {
         readonly Func<Task<SecurityReport>> configureSecurity;
@@ -42,6 +57,9 @@ namespace JustEnoughTools
         readonly TextBlock updateText;
         readonly TextBlock protectionDescription;
         readonly ProgressBar updateProgress;
+        readonly MainWindowOperations operations;
+        readonly TextBlock protectionReport, protectionExportReport, taskbarReport, taskbarExportReport, updateReport;
+        readonly ScrollViewer updateReportScroll;
         Task updateTask;
         readonly HashSet<TweakId> busyTweaks = new HashSet<TweakId>();
         bool securityBusy, taskbarBusy;
@@ -66,8 +84,10 @@ namespace JustEnoughTools
             : this(releaseNumber, executablePath, configureSecurity, inspectSecurity, null) { }
 
         internal MainWindowController(int releaseNumber, string executablePath,
-            Func<Task<SecurityReport>> configureSecurity, Func<SecuritySnapshot> inspectSecurity, ITweakService tweakService)
+            Func<Task<SecurityReport>> configureSecurity, Func<SecuritySnapshot> inspectSecurity, ITweakService tweakService,
+            MainWindowOperations operations = null)
         {
+            this.operations = operations ?? new MainWindowOperations();
             this.executablePath = executablePath;
             this.configureSecurity = configureSecurity;
             this.inspectSecurity = inspectSecurity ?? SecurityEngine.Inspect;
@@ -90,9 +110,16 @@ namespace JustEnoughTools
             this.tweakService.StateChanged += OnTweakServiceStateChanged;
             tweakUi = new TweakUi(Window);
             tweakUi.Apply = ApplyTweaks;
+            protectionReport = (TextBlock)Window.FindName("ProtectionReport");
+            protectionExportReport = (TextBlock)Window.FindName("ProtectionExportReport");
+            taskbarReport = (TextBlock)Window.FindName("TaskbarReport");
+            taskbarExportReport = (TextBlock)Window.FindName("TaskbarExportReport");
+            updateReport = (TextBlock)Window.FindName("UpdateReport");
+            updateReportScroll = (ScrollViewer)Window.FindName("UpdateReportScroll");
+            SmoothScrollingController.Attach(updateReportScroll);
             configureButton = (Button)Window.FindName("ConfigureSecurityButton");
-            securityExport = new SettingExportUi(Window, "", "SecurityIcon", ShowProblem);
-            taskbarExport = new SettingExportUi(Window, "Taskbar", "TaskbarIcon", ShowProblem);
+            securityExport = new SettingExportUi(Window, "", "SecurityIcon", message => SetExportReport(false, message));
+            taskbarExport = new SettingExportUi(Window, "Taskbar", "TaskbarIcon", message => SetExportReport(true, message));
             saveButton = securityExport.Save; iconButton = securityExport.Icon;
             addToStartMenu = securityExport.StartMenu; iconPopup = securityExport.Popup;
             applyTaskbarButton = (Button)Window.FindName("ApplyTaskbarButton");
@@ -214,8 +241,9 @@ namespace JustEnoughTools
                 if (snapshot == null) throw new InvalidOperationException("Не удалось прочитать состояние защиты Windows.");
                 securityNeedsChanges = snapshot.HasChanges || snapshot.HasUnknown;
                 protectionDescription.Visibility = snapshot.RequiresElevation ? Visibility.Visible : Visibility.Collapsed;
+                if (!securityBusy) SetReport(protectionReport, snapshot.HasUnknown ? snapshot.ToReport().FormatProblems() : null);
             }
-            catch (Exception)
+            catch (Exception error)
             {
                 if (disposed || closing) return;
                 // Unknown is not proof that the switches are off. A user may
@@ -223,6 +251,7 @@ namespace JustEnoughTools
                 // startup dialog or a background polling process.
                 securityNeedsChanges = true;
                 protectionDescription.Visibility = Visibility.Collapsed;
+                if (!securityBusy) SetReport(protectionReport, WindowsPowerShell.Explain(error, "Проверка защиты"));
             }
             finally
             {
@@ -242,9 +271,13 @@ namespace JustEnoughTools
             updateTask = Task.Run(delegate { return updates.CheckAndPrepareAsync(lifetime.Token); });
             try { await updateTask; }
             catch (OperationCanceledException) { }
-            catch
+            catch (Exception error)
             {
-                if (!closing && !disposed) SetUpdateStatus("Не удалось проверить обновления", null, false);
+                if (!closing && !disposed)
+                {
+                    SetUpdateStatus("Не удалось проверить обновления", null, false);
+                    SetUpdateReport(WindowsPowerShell.Explain(error, "Проверка обновления"));
+                }
             }
         }
 
@@ -253,7 +286,11 @@ namespace JustEnoughTools
             if (disposed || Window.Dispatcher.HasShutdownStarted) return;
             Action apply = delegate
             {
-                if (!disposed && !closing) SetUpdateStatus(status.Text, status.Fraction, status.Ready);
+                if (!disposed && !closing)
+                {
+                    SetUpdateStatus(status.Text, status.Fraction, status.Ready);
+                    SetUpdateReport(status.Details);
+                }
             };
             if (Window.Dispatcher.CheckAccess()) apply();
             else Window.Dispatcher.BeginInvoke(apply);
@@ -262,6 +299,7 @@ namespace JustEnoughTools
         void SetUpdateStatus(string text, double? fraction, bool ready)
         {
             updateReady = ready;
+            SetUpdateReport(null);
             updateText.Text = text;
             updateProgress.IsIndeterminate = !fraction.HasValue;
             if (fraction.HasValue) updateProgress.Value = Math.Max(0, Math.Min(100, fraction.Value * 100));
@@ -284,7 +322,7 @@ namespace JustEnoughTools
             taskbarExport.Save.IsEnabled = available && !taskbarSaving;
             taskbarExport.Icon.IsEnabled = available && !taskbarSaving;
             taskbarExport.StartMenu.IsEnabled = available && !taskbarSaving;
-            updateButton.IsEnabled = updateReady && updates.HasPreparedUpdate && available && !HasActiveOperations;
+            updateButton.IsEnabled = updateReady && HasPreparedUpdate && available && !HasActiveOperations;
         }
 
         async void ConfigureSecurity(object sender, RoutedEventArgs args)
@@ -292,130 +330,95 @@ namespace JustEnoughTools
             if (securityBusy || closing || closeAfterAction || configureSecurity == null || !configureButton.IsEnabled) return;
             securityBusy = true;
             iconPopup.IsOpen = false;
+            SetReport(protectionReport, "Выполняются настройки защиты…");
             RefreshButtons();
             try
             {
                 SecurityReport result = await configureSecurity();
                 if (result == null) throw new InvalidOperationException("Рабочий процесс не вернул результат настройки.");
-                if (!result.Succeeded) ShowProblem(result.FormatProblems());
+                SetReport(protectionReport, result.FormatProblems());
             }
             catch (Exception error)
             {
-                ShowProblem(error.Message);
+                SetReport(protectionReport, WindowsPowerShell.Explain(error, "Настройка защиты"));
             }
             finally
             {
                 await RefreshSecurityStateAsync();
                 securityBusy = false;
-                RefreshButtons();
-                CloseWhenIdle();
+                if (!disposed) { RefreshButtons(); CloseWhenIdle(); }
             }
         }
 
-        void ShowProblem(string message)
+        void SetReport(TextBlock target, string message)
         {
-            if (disposed) return;
-            Window dialog = CreateProblemDialog(message);
-            dialog.Owner = Window;
-            WindowsTheme.Attach(dialog);
-            dialog.ShowDialog();
+            if (disposed || closing) return;
+            target.Text = message ?? "";
+            target.Visibility = String.IsNullOrWhiteSpace(message) ? Visibility.Collapsed : Visibility.Visible;
         }
 
-        Window CreateProblemDialog(string message)
+        void SetExportReport(bool taskbar, string message)
         {
-            // Short reports size to their text. Long reports retain a visible
-            // acknowledgement button and scroll within the monitor work area.
-            Thickness frame = SystemParameters.WindowNonClientFrameThickness;
-            double maximumWidth = Math.Min(680, SystemParameters.WorkArea.Width - 32);
-            double maximumHeight = Math.Min(640, SystemParameters.WorkArea.Height - 32);
-            double textWidth = Math.Max(160, maximumWidth - frame.Left - frame.Right - 48);
-            double bodyHeight = Math.Max(60, maximumHeight - frame.Top - frame.Bottom - 48 - 36 - 16);
-            var dialog = new Window
-            {
-                Title = "JustEnoughTools",
-                SizeToContent = SizeToContent.WidthAndHeight,
-                MinWidth = Math.Min(260, maximumWidth),
-                MaxWidth = maximumWidth,
-                MaxHeight = maximumHeight,
-                WindowStartupLocation = WindowStartupLocation.CenterOwner,
-                Icon = Window.Icon,
-                Background = Window.Background,
-                Foreground = Window.Foreground,
-                FontFamily = Window.FontFamily,
-                FontSize = Window.FontSize,
-                ShowInTaskbar = false,
-                UseLayoutRounding = true
-            };
-            var layout = new Grid { Margin = new Thickness(24) };
-            layout.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-            layout.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-            var details = new TextBlock
-            {
-                Text = message,
-                TextWrapping = TextWrapping.Wrap,
-                MaxWidth = textWidth,
-                FontFamily = Window.FontFamily,
-                FontSize = Window.FontSize
-            };
-            details.Measure(new Size(textWidth, Double.PositiveInfinity));
-            bool requiresScrolling = details.DesiredSize.Height > bodyHeight;
-            if (requiresScrolling) details.MaxWidth = textWidth - 20;
-            var scroll = new ScrollViewer
-            {
-                Content = details,
-                MaxWidth = textWidth,
-                MaxHeight = bodyHeight,
-                VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-                HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
-                Padding = new Thickness(0, 0, requiresScrolling ? 20 : 0, 0)
-            };
-            SmoothScrollingController.Attach(scroll);
-            layout.Children.Add(scroll);
-            var dismiss = new Button
-            {
-                Content = "ОК",
-                Width = 96,
-                HorizontalAlignment = HorizontalAlignment.Right,
-                Margin = new Thickness(0, 16, 0, 0),
-                IsDefault = true,
-                IsCancel = true
-            };
-            dismiss.Click += delegate { dialog.Close(); };
-            Grid.SetRow(dismiss, 1);
-            layout.Children.Add(dismiss);
-            dialog.Content = layout;
-            return dialog;
+            SetReport(taskbar ? taskbarExportReport : protectionExportReport, message);
+        }
+
+        void SetUpdateReport(string message)
+        {
+            SetReport(updateReport, message);
+            if (!disposed && !closing) updateReportScroll.Visibility = updateReport.Visibility;
+        }
+
+        bool HasPreparedUpdate
+        {
+            get { return operations.HasPreparedUpdate == null ? updates.HasPreparedUpdate : operations.HasPreparedUpdate(); }
+        }
+
+        void ReportUpdateFailure(string message)
+        {
+            installScheduleFailed = true;
+            closing = false;
+            closeAfterAction = false;
+            restartAfterUpdate = false;
+            updateReady = HasPreparedUpdate;
+            updateText.Text = "Не удалось установить обновление";
+            SetUpdateReport(String.IsNullOrWhiteSpace(message) ? "Установщик не подтвердил готовность. Обновление сохранено." : message);
+            RefreshButtons();
         }
 
         async void ApplyTaskbar(object sender, RoutedEventArgs args)
         {
             if (taskbarBusy || closing || closeAfterAction) return;
             taskbarBusy = true;
+            SetReport(taskbarReport, "Выполняется исправление панели задач…");
             RefreshButtons();
             try
             {
-                TaskbarResult result = await Task.Run(delegate
+                TaskbarResult result = operations.ApplyTaskbar == null ? await Task.Run(delegate
                 {
                     using (UpdateService.AcquireOperationLease(executablePath, "Taskbar"))
                         return TaskbarRepair.Apply();
-                });
-                if (!result.Succeeded) ShowProblem(result.Reason);
+                }) : await operations.ApplyTaskbar();
+                if (result == null) throw new InvalidOperationException("Не получен результат исправления панели задач.");
+                SetReport(taskbarReport, String.IsNullOrWhiteSpace(result.Reason)
+                    ? (result.Succeeded ? "Исправление панели задач подтверждено." : "Результат исправления панели задач не подтверждён.")
+                    : result.Reason);
             }
-            catch (Exception error) { ShowProblem(error.Message); }
+            catch (Exception error) { SetReport(taskbarReport, WindowsPowerShell.Explain(error, "Исправление панели задач")); }
             finally
             {
                 try
                 {
                     var snapshot = await tweakService.InspectAsync();
                     var taskbar = snapshot.Rows.FirstOrDefault(row => row.Id == TweakId.Taskbar);
-                    if (taskbar != null && !busyTweaks.Contains(TweakId.Taskbar) && tweakUi.Snapshot != null)
+                    if (!disposed && !closing && taskbar != null && !busyTweaks.Contains(TweakId.Taskbar) && tweakUi.Snapshot != null)
                     {
                         tweakUi.Snapshot.Rows.RemoveAll(row => row.Id == TweakId.Taskbar);
                         tweakUi.Snapshot.Rows.Add(taskbar);
                     }
                 }
                 catch { }
-                taskbarBusy = false; RefreshButtons(); CloseWhenIdle();
+                taskbarBusy = false;
+                if (!disposed) { RefreshButtons(); CloseWhenIdle(); }
             }
         }
 
@@ -430,14 +433,17 @@ namespace JustEnoughTools
             RefreshButtons();
             try
             {
-                string destination = ExportDialogs.SaveExecutable(new WindowInteropHelper(Window).Handle, taskbar ? "Исправление панели задач.exe" : "Отключить защиту Windows.exe");
+                string destination = operations.SelectExportPath == null
+                    ? ExportDialogs.SaveExecutable(new WindowInteropHelper(Window).Handle, taskbar ? "Исправление панели задач.exe" : "Отключить защиту Windows.exe")
+                    : operations.SelectExportPath(taskbar);
                 if (destination == null) return;
-                ExecutableExporter.Save(destination, export.Selection, export.StartMenu.IsChecked == true, action);
+                if (operations.SaveExport == null) ExecutableExporter.Save(destination, export.Selection, export.StartMenu.IsChecked == true, action);
+                else operations.SaveExport(destination, export.Selection, export.StartMenu.IsChecked == true, action);
                 string warning = export.Selection.LastWarning;
                 export.Refresh();
-                if (!String.IsNullOrWhiteSpace(warning)) ShowProblem(warning);
+                SetExportReport(taskbar, "Автономный EXE сохранён." + (String.IsNullOrWhiteSpace(warning) ? "" : "\n" + warning));
             }
-            catch (Exception error) { ShowProblem(error.Message); }
+            catch (Exception error) { SetExportReport(taskbar, WindowsPowerShell.Explain(error, "Сохранение автономного EXE")); }
             finally
             {
                 if (taskbar) taskbarSaving = false; else securitySaving = false;
@@ -448,7 +454,7 @@ namespace JustEnoughTools
 
         void UpdateAndRestart(object sender, RoutedEventArgs args)
         {
-            if (closing || closeAfterAction || HasActiveOperations || !updates.HasPreparedUpdate) return;
+            if (closing || closeAfterAction || HasActiveOperations || !HasPreparedUpdate) return;
             restartAfterUpdate = true;
             Window.Close();
         }
@@ -476,21 +482,17 @@ namespace JustEnoughTools
             // A detached worker owns the same EXE and its operation leases.
             // Leave the prepared package untouched for a later safe install.
             bool detachedWork = busyTweaks.Count != 0;
-            try { detachedWork |= UpdateService.IsOperationInProgress(executablePath); }
+            try { detachedWork |= operations.IsOperationInProgress == null ? UpdateService.IsOperationInProgress(executablePath) : operations.IsOperationInProgress(); }
             catch { detachedWork = true; }
-            if (!detachedWork && updates.HasPreparedUpdate && (!installScheduleFailed || restartAfterUpdate))
+            if (!detachedWork && HasPreparedUpdate && (!installScheduleFailed || restartAfterUpdate))
             {
                 string error = null;
                 bool scheduled;
-                try { scheduled = updates.TryScheduleInstall(restartAfterUpdate, out error); }
-                catch (Exception failure) { scheduled = false; error = failure.Message; }
+                try { scheduled = operations.ScheduleInstall == null ? updates.TryScheduleInstall(restartAfterUpdate, out error) : operations.ScheduleInstall(restartAfterUpdate, out error); }
+                catch (Exception failure) { scheduled = false; error = WindowsPowerShell.Explain(failure, "Подготовка установки обновления"); }
                 if (!scheduled)
                 {
-                    installScheduleFailed = true;
-                    closing = false;
-                    restartAfterUpdate = false;
-                    updateText.Text = String.IsNullOrWhiteSpace(error) ? "Не удалось установить обновление" : error;
-                    RefreshButtons();
+                    ReportUpdateFailure(error);
                     return;
                 }
             }

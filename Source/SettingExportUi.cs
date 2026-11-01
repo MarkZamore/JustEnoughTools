@@ -7,6 +7,7 @@ using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using JustEnoughTools.Platform;
 using JustEnoughTools.Export;
 
 namespace JustEnoughTools
@@ -92,7 +93,7 @@ namespace JustEnoughTools
                         }
                         Refresh();
                     }
-                    catch (Exception error) { showProblem(error.Message); }
+                    catch (Exception error) { showProblem(WindowsPowerShell.Explain(error, "Выбор иконки")); }
                     Icon.Focus();
                 };
                 choices.Children.Add(button);

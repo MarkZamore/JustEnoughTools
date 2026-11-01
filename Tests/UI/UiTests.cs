@@ -11,6 +11,10 @@ using System.Windows.Media.Imaging;
 using System.Collections.Generic;
 using System.Linq;
 using JustEnoughTools.Tweaks;
+using JustEnoughTools.Security;
+using JustEnoughTools.Actions;
+using JustEnoughTools.Updates;
+using System.Windows.Threading;
 
 namespace JustEnoughTools.Tests
 {
@@ -253,26 +257,6 @@ namespace JustEnoughTools.Tests
             }
             typeof(MainWindowController).GetMethod("RefreshButtons", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(controller, null);
 
-            MethodInfo createProblemDialog = typeof(MainWindowController).GetMethod("CreateProblemDialog", BindingFlags.Instance | BindingFlags.NonPublic);
-            Require(createProblemDialog != null, "A problem report must use the content-sized dialog.");
-            Window shortDialog = (Window)createProblemDialog.Invoke(controller,
-                new object[] { "Запрос прав администратора отменён. Настройка не выполнялась." });
-            ScrollViewer shortDetails;
-            double shortHeight = MeasureProblemDialog(shortDialog, out shortDetails);
-            Require(shortDialog.SizeToContent == SizeToContent.WidthAndHeight && shortHeight < 200 && shortDetails.ScrollableHeight <= 0.5,
-                "A short problem report must fit its text without a fixed-height empty area or scrollbar.");
-            passed++;
-
-            var longText = new System.Text.StringBuilder("Подтверждено сейчас: 6 из 18.\n");
-            for (int index = 0; index < 18; index++)
-                longText.Append("\n• Параметр ").Append(index + 1).Append(": документированный программный способ недоступен для этой редакции Windows; значение осталось без изменений. Проверка результата не подтвердила отключение.");
-            Window longDialog = (Window)createProblemDialog.Invoke(controller, new object[] { longText.ToString() });
-            ScrollViewer longDetails;
-            double longHeight = MeasureProblemDialog(longDialog, out longDetails);
-            Require(longHeight > shortHeight && longHeight <= longDialog.MaxHeight && longDetails.ScrollableHeight > 0.5,
-                "A long report must be bounded and scrollable with its acknowledgement button accessible.");
-            passed++;
-
             Require(!window.IsVisible && !window.IsLoaded && !actionInvoked && inspections == 0,
                 "UI tests must not show the window, start maintenance/network checks, or invoke security actions.");
             Find<Button>(window, "TweakApply12").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
@@ -292,7 +276,7 @@ namespace JustEnoughTools.Tests
             passed += 3;
             // Do not call Close: its production handler may schedule a prepared
             // update. This unshown window has no active task or dispatcher loop.
-            return passed;
+            return passed + TestInlineReports(applicationAssembly);
         }
 
         static void SetControllerFlag(MainWindowController controller, string name, bool value)
@@ -300,30 +284,201 @@ namespace JustEnoughTools.Tests
             typeof(MainWindowController).GetField(name, BindingFlags.Instance | BindingFlags.NonPublic).SetValue(controller, value);
         }
 
-        static double MeasureProblemDialog(Window dialog, out ScrollViewer details)
+        static int TestInlineReports(Assembly applicationAssembly)
         {
-            Require(!dialog.IsLoaded && !dialog.IsVisible && dialog.Owner == null,
-                "A report layout test must not show or own a native window.");
-            Thickness frame = SystemParameters.WindowNonClientFrameThickness;
-            double maximumWidth = dialog.MaxWidth - frame.Left - frame.Right;
-            double maximumHeight = dialog.MaxHeight - frame.Top - frame.Bottom;
-            Grid content = (Grid)dialog.Content;
-            content.Measure(new Size(maximumWidth, maximumHeight));
-            var client = new Size(
-                Math.Max(dialog.MinWidth - frame.Left - frame.Right, Math.Min(maximumWidth, content.DesiredSize.Width)),
-                Math.Min(maximumHeight, content.DesiredSize.Height));
-            dialog.Content = null;
-            var host = new Border { Width = client.Width, Height = client.Height, Background = dialog.Background, Child = content };
-            System.Windows.Documents.TextElement.SetForeground(host, dialog.Foreground);
-            System.Windows.Documents.TextElement.SetFontFamily(host, dialog.FontFamily);
-            System.Windows.Documents.TextElement.SetFontSize(host, dialog.FontSize);
-            host.Measure(client);
-            host.Arrange(new Rect(new Point(), client));
-            host.UpdateLayout();
-            details = (ScrollViewer)content.Children[0];
-            AssertInside((Button)content.Children[1], host, "The report acknowledgement button must remain inside the dialog.");
-            Require(!dialog.IsLoaded && !dialog.IsVisible, "Measuring a report must not show its window.");
-            return client.Height;
+            SynchronizationContext previousContext = SynchronizationContext.Current;
+            SynchronizationContext.SetSynchronizationContext(new DispatcherSynchronizationContext());
+            var tweaks = new FakeTweaks();
+            var securityCompletion = new TaskCompletionSource<SecurityReport>();
+            Func<Task<SecurityReport>> securityAction = () => securityCompletion.Task;
+            var snapshot = new SecuritySnapshot();
+            foreach (var action in SecurityEngine.Catalogue)
+                snapshot.Actions.Add(new ActionState { Id = action.Id, Title = action.Title,
+                    State = action.Id == "defender.realtime" ? ActionStateKind.NeedsChange : ActionStateKind.AlreadyDesired,
+                    Reason = "Проверено тестовым адаптером." });
+            bool prepared = true;
+            int installAttempts = 0, saves = 0, inspections = 0;
+            bool saveFails = true;
+            bool inspectFails = false;
+            var operations = new MainWindowOperations
+            {
+                ApplyTaskbar = () => Task.FromResult(new TaskbarResult { Succeeded = true, Reason = "Режим панели задач подтверждён." }),
+                SelectExportPath = taskbar => taskbar ? "Taskbar.exe" : "Security.exe",
+                SaveExport = (path, selection, startMenu, action) =>
+                {
+                    saves++;
+                    if (saveFails) throw new UnauthorizedAccessException("Тестовый отказ сохранения.");
+                },
+                HasPreparedUpdate = () => prepared,
+                IsOperationInProgress = () => false,
+                ScheduleInstall = delegate(bool restart, out string error)
+                {
+                    installAttempts++;
+                    error = "Запуск установщика: отказано в доступе, Win32 5.";
+                    return false;
+                }
+            };
+            var controller = new MainWindowController(1, applicationAssembly.Location,
+                () => securityAction(), () =>
+                {
+                    inspections++;
+                    if (inspectFails) throw new UnauthorizedAccessException("Тестовый отказ проверки.");
+                    return snapshot;
+                }, tweaks, operations);
+            Window window = controller.Window;
+            Grid root = Find<Grid>(window, "RootGrid");
+            int passed = 0;
+            try
+            {
+                foreach (string name in new[] { "ProtectionReport", "ProtectionExportReport", "TaskbarReport", "TaskbarExportReport", "UpdateReport" })
+                    Require(Find<TextBlock>(window, name).Visibility == Visibility.Collapsed, "Reports must start collapsed: " + name);
+                Require(typeof(MainWindowController).GetMethod("CreateProblemDialog", BindingFlags.Instance | BindingFlags.NonPublic) == null,
+                    "The main application must not construct modal information dialogs.");
+                passed++;
+
+                WaitTask((Task)Invoke(controller, "RefreshSecurityStateAsync"));
+                Button configure = Find<Button>(window, "ConfigureSecurityButton");
+                Require(configure.IsEnabled && inspections == 1, "A fixed startup snapshot must enable a pending action without polling.");
+                configure.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                Require(!configure.IsEnabled && Find<TextBlock>(window, "ProtectionReport").Text.Contains("Выполняются"),
+                    "A running security action must report progress inline.");
+                Find<Button>(window, "SaveButton").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                Require(saves == 1 && Find<TextBlock>(window, "ProtectionExportReport").Text.Contains("Тестовый отказ") &&
+                    Find<TextBlock>(window, "ProtectionReport").Text.Contains("Выполняются"),
+                    "A simultaneous export failure must retain the independent action report.");
+                var partial = new SecurityReport();
+                partial.Results.Add(new ActionResult { Id = "defender.realtime", Title = "Защита в реальном времени",
+                    Outcome = ActionOutcome.Blocked, Reason = "Windows не подтвердила изменение." });
+                partial.Results.Add(new ActionResult { Id = "firewall.private", Outcome = ActionOutcome.Applied });
+                securityCompletion.SetResult(partial);
+                PumpUntil(() => configure.IsEnabled);
+                Require(Find<TextBlock>(window, "ProtectionReport").Text.Contains("1 из 2") &&
+                    Find<TextBlock>(window, "ProtectionReport").Text.Contains("Windows не подтвердила") && inspections == 2,
+                    "A partial report must survive the post-operation inspection and retain its counts and reasons.");
+                Require(Find<TextBlock>(window, "ProtectionExportReport").Text.Contains("Тестовый отказ"),
+                    "Action completion must not erase export errors.");
+                passed += 4;
+
+                securityAction = () => { throw new InvalidOperationException("Запрос прав администратора отменён. Изменения не выполнялись."); };
+                configure.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                PumpUntil(() => configure.IsEnabled);
+                Require(Find<TextBlock>(window, "ProtectionReport").Text.Contains("отменён"), "Cancelled UAC must remain inside the protection card.");
+                var success = new SecurityReport();
+                success.Results.Add(new ActionResult { Id = "defender.realtime", Outcome = ActionOutcome.AlreadySet });
+                securityAction = () => Task.FromResult(success);
+                configure.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                PumpUntil(() => configure.IsEnabled);
+                Require(Find<TextBlock>(window, "ProtectionReport").Text.Contains("1 из 1"), "Successful security execution must show its summary inline.");
+                passed += 2;
+
+                snapshot.Actions[0].State = ActionStateKind.Unknown;
+                snapshot.Actions[0].Reason = "Провайдер не подтвердил состояние.";
+                WaitTask((Task)Invoke(controller, "RefreshSecurityStateAsync"));
+                Require(Find<TextBlock>(window, "ProtectionReport").Text.Contains("Провайдер не подтвердил") && configure.IsEnabled &&
+                    Find<TextBlock>(window, "ProtectionDescription").Visibility == Visibility.Collapsed,
+                    "An unknown initial state must expose its reason and allow rechecking without assuming an elevation requirement.");
+                inspectFails = true;
+                WaitTask((Task)Invoke(controller, "RefreshSecurityStateAsync"));
+                Require(Find<TextBlock>(window, "ProtectionReport").Text.Contains("Тестовый отказ проверки") && configure.IsEnabled,
+                    "A failed initial inspection must report its error inline without treating protection as disabled.");
+                inspectFails = false;
+                snapshot.Actions[0].State = ActionStateKind.NeedsChange;
+                WaitTask((Task)Invoke(controller, "RefreshSecurityStateAsync"));
+                passed += 2;
+
+                Find<Button>(window, "ApplyTaskbarButton").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                Require(Find<TextBlock>(window, "TaskbarReport").Text == "Режим панели задач подтверждён.", "Taskbar success must be inline.");
+                operations.ApplyTaskbar = () => Task.FromResult(new TaskbarResult { Reason = "Windows не подтвердила режим; исходное значение восстановлено." });
+                Find<Button>(window, "ApplyTaskbarButton").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                Require(Find<TextBlock>(window, "TaskbarReport").Text.Contains("восстановлено"), "Taskbar failure and rollback details must remain inline.");
+                Find<Button>(window, "TaskbarSaveButton").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                Require(Find<TextBlock>(window, "TaskbarExportReport").Text.Contains("Тестовый отказ") &&
+                    Find<TextBlock>(window, "TaskbarReport").Text.Contains("восстановлено"), "Taskbar export errors must keep the independent repair result.");
+                saveFails = false;
+                Find<Button>(window, "SaveButton").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                Require(Find<TextBlock>(window, "ProtectionExportReport").Text == "Автономный EXE сохранён.", "A successful save must replace the earlier save failure.");
+                passed += 4;
+
+                Invoke(controller, "OnUpdateStatus", new UpdateStatus("Не удалось проверить обновления", null, false,
+                    "Проверка манифеста: сервер недоступен, HRESULT=0x80004005."));
+                Require(Find<TextBlock>(window, "UpdateReport").Visibility == Visibility.Visible &&
+                    Find<TextBlock>(window, "UpdateReport").Text.Contains("Проверка манифеста") &&
+                    Find<TextBlock>(window, "UpdateProgressText").Text == "Не удалось проверить обновления",
+                    "Startup update service failures must deliver their details to the inline report.");
+                Invoke(controller, "OnUpdateStatus", new UpdateStatus("Обновление готово", 1, true));
+                Require(Find<TextBlock>(window, "UpdateReport").Visibility == Visibility.Collapsed &&
+                    Find<ScrollViewer>(window, "UpdateReportScroll").Visibility == Visibility.Collapsed,
+                    "A healthy update status must clear obsolete diagnostic details.");
+                passed += 2;
+
+                Invoke(controller, "SetUpdateStatus", "Обновление готово", (double?)1, true);
+                SetControllerFlag(controller, "updateReady", false);
+                SetControllerFlag(controller, "closeAfterAction", true);
+                Invoke(controller, "Closing", window, new System.ComponentModel.CancelEventArgs());
+                Require(installAttempts == 1 && prepared && Find<Button>(window, "UpdateButton").IsEnabled && configure.IsEnabled,
+                    "A failed installation must preserve the prepared update and restore usable controls even before a ready notification or after deferred closing.");
+                Require(Find<TextBlock>(window, "UpdateProgressText").Text == "Не удалось установить обновление" &&
+                    Find<TextBlock>(window, "UpdateReport").Text.Contains("Win32 5"), "Update errors must separate a short bar status from detailed inline diagnostics.");
+                SetControllerFlag(controller, "restartAfterUpdate", true);
+                Invoke(controller, "Closing", window, new System.ComponentModel.CancelEventArgs());
+                Require(installAttempts == 2 && prepared && Find<Button>(window, "UpdateButton").IsEnabled,
+                    "An explicit retry must re-enter scheduling without discarding the prepared package.");
+                passed += 3;
+
+                var longText = new System.Text.StringBuilder("Подтверждено сейчас: 6 из 18.\n");
+                for (int index = 0; index < 18; index++)
+                    longText.Append("\n• Параметр ").Append(index + 1).Append(": документированный программный способ недоступен; результат не подтверждён.");
+                Invoke(controller, "SetReport", Find<TextBlock>(window, "ProtectionReport"), longText.ToString());
+                Invoke(controller, "SetUpdateReport", longText.ToString());
+                foreach (Size outerSize in new[] { new Size(820, 560), new Size(1100, 760) })
+                {
+                    MeasureClient(window, root, outerSize);
+                    ScrollViewer details = Find<ScrollViewer>(window, "UpdateReportScroll");
+                    Require(details.ActualHeight <= 96.5 && details.ScrollableHeight > 0.5,
+                        "Long update details must stay within their footer limit and remain scrollable.");
+                    AssertInside(Find<Grid>(window, "UpdateArea"), root, "A long report must keep the update footer inside the window.");
+                    AssertInside(Find<Button>(window, "UpdateButton"), root, "A long report must keep the update button accessible.");
+                    ScrollViewer settings = Find<ScrollViewer>(window, "SettingsScroll");
+                    Require(settings.ActualHeight > 100 && settings.ScrollableHeight > 0.5, "Long card reports must use the main settings scrollbar.");
+                    TextBlock report = Find<TextBlock>(window, "ProtectionReport");
+                    Border card = Find<Border>(window, "ProtectionCard");
+                    AssertInside(report, card, "The full wrapped protection report must remain inside its expanding card.");
+                    foreach (double scale in new[] { 1.0, 1.25, 1.5, 1.75, 2.0 }) AssertScaledRendering(root, scale);
+                    SaveReportPreview(window, root, outerSize);
+                }
+                passed++;
+                Require(!window.IsLoaded && !window.IsVisible, "Inline UI tests must not show windows or trigger production startup.");
+            }
+            finally
+            {
+                Invoke(controller, "Closed", window, EventArgs.Empty);
+                SynchronizationContext.SetSynchronizationContext(previousContext);
+            }
+            return passed;
+        }
+
+        static object Invoke(MainWindowController controller, string method, params object[] args)
+        {
+            return typeof(MainWindowController).GetMethod(method, BindingFlags.Instance | BindingFlags.NonPublic).Invoke(controller, args);
+        }
+
+        static void WaitTask(Task task)
+        {
+            PumpUntil(() => task.IsCompleted);
+            task.GetAwaiter().GetResult();
+        }
+
+        static void PumpUntil(Func<bool> completed)
+        {
+            var deadline = System.Diagnostics.Stopwatch.StartNew();
+            while (!completed())
+            {
+                Require(deadline.Elapsed < TimeSpan.FromSeconds(10), "A fixed UI operation did not complete.");
+                var frame = new DispatcherFrame();
+                Dispatcher.CurrentDispatcher.BeginInvoke(DispatcherPriority.Background, new Action(() => frame.Continue = false));
+                Dispatcher.PushFrame(frame);
+                Thread.Sleep(1);
+            }
         }
 
         sealed class FakeTweaks : ITweakService
@@ -505,6 +660,26 @@ namespace JustEnoughTools.Tests
             bitmap.Render(root);
             Require(bitmap.PixelWidth == width && bitmap.PixelHeight == height,
                 "The offscreen renderer must retain the complete scaled client canvas.");
+        }
+
+        static void SaveReportPreview(Window window, Grid root, Size outerSize)
+        {
+            string directory = Path.GetFullPath(Path.Combine("Tests", "Artifacts", "Reports"));
+            Directory.CreateDirectory(directory);
+            var canvas = (FrameworkElement)root.Parent;
+            var preview = new RenderTargetBitmap((int)Math.Ceiling(canvas.ActualWidth), (int)Math.Ceiling(canvas.ActualHeight), 96, 96, PixelFormats.Pbgra32);
+            var backdrop = new DrawingVisual();
+            using (var drawing = backdrop.RenderOpen())
+            {
+                var bounds = new Rect(0, 0, canvas.ActualWidth, canvas.ActualHeight);
+                drawing.DrawRectangle(new SolidColorBrush(Color.FromRgb(32, 32, 32)), null, bounds);
+                drawing.DrawRectangle(window.Background, null, bounds);
+            }
+            preview.Render(backdrop);
+            preview.Render(canvas);
+            var encoder = new PngBitmapEncoder();
+            encoder.Frames.Add(BitmapFrame.Create(preview));
+            using (var output = File.Create(Path.Combine(directory, "window-" + outerSize.Width + ".png"))) encoder.Save(output);
         }
 
         static Rect Bounds(FrameworkElement element, FrameworkElement relativeTo)

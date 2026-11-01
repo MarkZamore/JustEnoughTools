@@ -2,11 +2,11 @@ using System;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
-using System.IO.Compression;
 using System.Security.Cryptography;
 using System.Text;
-using System.Text.RegularExpressions;
 using System.Threading;
+using System.Threading.Tasks;
+using JustEnoughTools.Platform;
 
 namespace JustEnoughTools.Updates
 {
@@ -19,9 +19,20 @@ namespace JustEnoughTools.Updates
         internal static bool TrySchedule(string executablePath, string packagePath, int currentRelease,
             bool restart, out string error)
         {
+            return TrySchedule(executablePath, packagePath, currentRelease, restart, out error,
+                WindowsPowerShell.Start, WindowsPowerShell.SendScriptAsync);
+        }
+
+        internal static bool TrySchedule(string executablePath, string packagePath, int currentRelease,
+            bool restart, out string error, Func<string, string, bool, Process> startHelper,
+            Func<Process, string, Task> sendScript)
+        {
             error = string.Empty;
             EventWaitHandle cancel = null;
             Mutex operation = null;
+            Process helper = null;
+            bool committed = false;
+            string stage = "Проверка путей обновления";
             try
             {
                 var executable = Path.GetFullPath(executablePath);
@@ -31,12 +42,14 @@ namespace JustEnoughTools.Updates
                         StringComparison.OrdinalIgnoreCase))
                     throw new InvalidOperationException("Пакет обновления должен находиться рядом с программой.");
 
+                stage = "Проверка работающего установщика";
                 if (IsActive(executable))
                 {
                     if (!restart || RequestRestartIfActive(executable)) return true;
                     throw new InvalidOperationException("Установщик не подтвердил запрос перезапуска.");
                 }
 
+                stage = "Согласование обновления с операциями приложения";
                 if (UpdateService.IsOperationInProgress(executable))
                     throw new InvalidOperationException("Дождитесь завершения текущей операции. Обновление сохранено.");
 
@@ -51,76 +64,101 @@ namespace JustEnoughTools.Updates
                     throw new InvalidOperationException("Дождитесь завершения текущей операции. Обновление сохранено.");
                 operation.ReleaseMutex();
 
+                stage = "Проверка пакета обновления";
                 PreparedUpdate prepared;
-                if (!UpdatePackage.TryRead(package, currentRelease, out prepared, out error)) return false;
+                if (!UpdatePackage.TryRead(package, currentRelease, out prepared, out error))
+                {
+                    error = stage + ": " + (string.IsNullOrWhiteSpace(error)
+                        ? "Подготовленный пакет обновления недоступен." : error);
+                    return false;
+                }
+                stage = "Проверка установленного EXE";
+                var originalHash = HashFile(executable);
                 if (!UpdatePackage.IsViableExecutable(executable))
                     throw new InvalidOperationException("Текущий исполняемый файл не найден или повреждён.");
 
-                var originalHash = HashFile(executable);
                 var names = NamesFor(executable);
                 var attempt = Guid.NewGuid().ToString("N");
                 var readyName = names + ".Handoff." + attempt;
                 var intentName = names + ".Intent." + attempt;
                 var cancelName = names + ".Cancel." + attempt;
+                stage = "Подготовка передачи обновления";
+                cancel = new EventWaitHandle(false, EventResetMode.ManualReset, cancelName);
                 using (var ready = new EventWaitHandle(false, EventResetMode.ManualReset, readyName))
                 using (var intent = new EventWaitHandle(false, EventResetMode.ManualReset, intentName))
-                using (cancel = new EventWaitHandle(false, EventResetMode.ManualReset, cancelName))
                 using (var source = Process.GetCurrentProcess())
                 {
                     var script = BuildScript(executable, package, names, readyName, intentName, cancelName,
                         source.Id, source.StartTime.ToUniversalTime().Ticks, prepared.PayloadLength,
                         prepared.Manifest.Sha256, prepared.Manifest.ReleaseNumber, currentRelease,
                         originalHash, restart);
-                    var windows = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
-                    var systemDirectory = Environment.Is64BitOperatingSystem && !Environment.Is64BitProcess
-                        ? "Sysnative" : "System32";
-                    var powershell = Path.Combine(windows, systemDirectory, "WindowsPowerShell", "v1.0", "powershell.exe");
-                    if (!File.Exists(powershell))
-                        throw new FileNotFoundException("Системный Windows PowerShell недоступен.");
-
-                    var arguments = "-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -EncodedCommand " +
-                        EncodeScript(script);
-                    if (powershell.Length + arguments.Length + 4 >= 32767)
-                        throw new InvalidOperationException("Команда установщика превышает ограничение Windows.");
-
-                    var start = new ProcessStartInfo(powershell, arguments)
+                    stage = "Запуск установщика Windows PowerShell";
+                    var deadline = Stopwatch.StartNew();
+                    helper = startHelper(script, Path.GetDirectoryName(executable), false);
+                    if (helper == null) throw new InvalidOperationException("Не удалось запустить установщик.");
+                    stage = "Передача команд установщику";
+                    Task transfer = sendScript(helper, script);
+                    if (transfer == null) throw new InvalidOperationException("Передача команд не была запущена.");
+                    while (!transfer.IsCompleted && deadline.ElapsedMilliseconds < HandoffMilliseconds)
                     {
-                        UseShellExecute = false,
-                        CreateNoWindow = true,
-                        WindowStyle = ProcessWindowStyle.Hidden,
-                        WorkingDirectory = Path.GetDirectoryName(executable)
-                    };
-                    using (var helper = Process.Start(start))
-                    {
-                        if (helper == null) throw new InvalidOperationException("Не удалось запустить установщик.");
-                        var deadline = Stopwatch.StartNew();
-                        while (deadline.ElapsedMilliseconds < HandoffMilliseconds)
-                        {
-                            if (ready.WaitOne(50))
-                            {
-                                // No helper may modify a file until this final commitment.
-                                // There are deliberately no fallible operations after Set().
-                                intent.Set();
-                                return true;
-                            }
-                            if (helper.HasExited)
-                                throw new InvalidOperationException(UpdateService.IsOperationInProgress(executable)
-                                    ? "Дождитесь завершения текущей операции. Обновление сохранено."
-                                    : "Установщик завершился до подготовки обновления.");
-                        }
-                        cancel.Set();
-                        error = "Установщик не подтвердил готовность. Программа продолжит работу.";
-                        return false;
+                        Thread.Sleep(25);
                     }
+                    if (!transfer.IsCompleted)
+                    {
+                        // Observe a later pipe failure after the process is cancelled.
+                        transfer.ContinueWith(failed => GC.KeepAlive(failed.Exception),
+                            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously);
+                        throw new TimeoutException("Установщик не принял команды за отведённое время. Программа продолжит работу.");
+                    }
+                    transfer.GetAwaiter().GetResult();
+                    stage = "Ожидание готовности установщика";
+                    while (deadline.ElapsedMilliseconds < HandoffMilliseconds)
+                    {
+                        if (ready.WaitOne(50))
+                        {
+                            stage = "Подтверждение установки";
+                            // No helper may modify a file until the complete input
+                            // has been sent and this final commitment is signalled.
+                            intent.Set();
+                            committed = true;
+                            return true;
+                        }
+                        if (helper.HasExited)
+                            throw new InvalidOperationException((UpdateService.IsOperationInProgress(executable)
+                                ? "Дождитесь завершения текущей операции. Обновление сохранено."
+                                : "Установщик завершился до подготовки обновления.") +
+                                " Код завершения: " + helper.ExitCode.ToString(CultureInfo.InvariantCulture) + ".");
+                    }
+                    throw new TimeoutException("Установщик не подтвердил готовность. Программа продолжит работу.");
                 }
             }
             catch (Exception ex)
             {
                 try { if (cancel != null) cancel.Set(); } catch (Exception) { }
-                error = ex.Message;
+                error = WindowsPowerShell.Explain(ex, stage);
                 return false;
             }
-            finally { if (operation != null) operation.Dispose(); }
+            finally
+            {
+                if (!committed && helper != null)
+                {
+                    // Cancellation is still alive when the child observes it.
+                    // Before intent, terminating our own helper cannot modify files.
+                    try
+                    {
+                        if (cancel != null) cancel.Set();
+                        if (!helper.HasExited && !helper.WaitForExit(500))
+                        {
+                            helper.Kill();
+                            helper.WaitForExit(1000);
+                        }
+                    }
+                    catch (Exception) { }
+                }
+                if (helper != null) helper.Dispose();
+                if (cancel != null) cancel.Dispose();
+                if (operation != null) operation.Dispose();
+            }
         }
 
         internal static bool IsActive(string executablePath)
@@ -207,26 +245,6 @@ namespace JustEnoughTools.Updates
 
         private static string Hex(byte[] bytes) => BitConverter.ToString(bytes).Replace("-", "").ToLowerInvariant();
         private static string Encoded(string value) => Convert.ToBase64String(Encoding.UTF8.GetBytes(value));
-
-        internal static string EncodeScript(string script)
-        {
-            script = Regex.Replace(script, @"(?m)^[ \t]+", string.Empty);
-            script = Regex.Replace(script, @"(?m)^#[^\r\n]*(?:\r?\n|$)", string.Empty);
-            byte[] content = Encoding.UTF8.GetBytes(script.Replace("\r\n", "\n"));
-            byte[] compressed;
-            using (var output = new MemoryStream())
-            {
-                using (var gzip = new GZipStream(output, CompressionMode.Compress, true))
-                    gzip.Write(content, 0, content.Length);
-                compressed = output.ToArray();
-            }
-            // Transport only: the fixed helper is expanded in memory. This
-            // avoids Windows' command-line limit without a temporary script.
-            string transport = "$m=New-Object IO.MemoryStream(,[Convert]::FromBase64String('" +
-                Convert.ToBase64String(compressed) + "'));$g=New-Object IO.Compression.GZipStream($m,[IO.Compression.CompressionMode]::Decompress);" +
-                "$r=New-Object IO.StreamReader($g,[Text.Encoding]::UTF8);try{$s=$r.ReadToEnd()}finally{$r.Dispose();$g.Dispose();$m.Dispose()};&([ScriptBlock]::Create($s))";
-            return Convert.ToBase64String(Encoding.Unicode.GetBytes(transport));
-        }
 
         private static string BuildScript(string executable, string package, string names, string handoff,
             string intent, string cancel, int sourcePid, long sourceStartTicks, long payloadLength,

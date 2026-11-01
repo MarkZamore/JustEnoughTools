@@ -10,19 +10,21 @@ using System.Runtime.Serialization;
 using System.Runtime.Serialization.Json;
 using System.Text;
 using System.Threading.Tasks;
+using JustEnoughTools.Platform;
 using Microsoft.Win32;
 
 namespace JustEnoughTools.Security
 {
-    // This adapter is instantiated only after elevation and acquisition of the
-    // action mutex. All commands are fixed source text, never user input.
+    // Discovery is read-only; setters run only in the action worker. All
+    // commands are fixed source text, never user input.
     internal sealed class WindowsSecurityBackend : ISecurityBackend
     {
         private const string CurrentVersion = @"SOFTWARE\Microsoft\Windows NT\CurrentVersion";
         private readonly string edition;
         private readonly int build;
+        private readonly Func<string, bool, ProcessOutput> runScript;
 
-        internal WindowsSecurityBackend()
+        internal WindowsSecurityBackend() : this(RunRawScript, null, 0)
         {
             try
             {
@@ -37,6 +39,15 @@ namespace JustEnoughTools.Security
                 }
             }
             catch { /* A missing edition blocks only the policies which require it. */ }
+        }
+
+        // Tests supply provider output and a non-policy edition, so they never
+        // inspect the host registry, launch a process, or invoke a setter.
+        internal WindowsSecurityBackend(Func<string, bool, ProcessOutput> runScript, string edition, int build)
+        {
+            this.runScript = runScript ?? throw new ArgumentNullException(nameof(runScript));
+            this.edition = edition;
+            this.build = build;
         }
 
         public ActionResult Execute(SecurityAction action)
@@ -70,7 +81,7 @@ namespace JustEnoughTools.Security
             string failure = null;
             try
             {
-                ProcessOutput output = RunRawScript(SnapshotScript, true);
+                ProcessOutput output = runScript(SnapshotScript, true);
                 if (output.ExitCode != 0) throw new InvalidOperationException("PowerShell: " + output.Errors);
                 using (var stream = new MemoryStream(Encoding.UTF8.GetBytes(output.Output.Trim().TrimStart('\uFEFF'))))
                     observed = (ProbeSnapshot)new DataContractJsonSerializer(typeof(ProbeSnapshot)).ReadObject(stream);
@@ -189,7 +200,7 @@ namespace JustEnoughTools.Security
             return new ActionState { Id = action.Id, Title = action.Title, State = state, Reason = reason, RequiresElevation = elevation };
         }
 
-        private static ActionResult Preference(SecurityAction action, string property, string value, string target, bool realtime)
+        private ActionResult Preference(SecurityAction action, string property, string value, string target, bool realtime)
         {
             return RunPowerShell(action, BuildPreferenceScript(property, value, target, realtime));
         }
@@ -252,7 +263,7 @@ if ([int]$pref.PUAProtection -ne 0 -and [int]$pref.PUAProtection -ne 1) { Finish
                 .Replace("VALUE", value).Replace("PRECHECK", precheck).Replace("RUNTIME", runtime);
         }
 
-        private static ActionResult Firewall(SecurityAction action, string profile)
+        private ActionResult Firewall(SecurityAction action, string profile)
         {
             const string template = @"
 $name = 'PROFILE'
@@ -386,7 +397,19 @@ Finish 0 'Локальная и эффективная настройки про
         [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
         private static extern int IsDeviceRegisteredWithManagement([MarshalAs(UnmanagedType.Bool)] out bool registered, uint length, IntPtr userPrincipalName);
 
-        private const string Preamble = @"
+        private const string ProviderErrorFunction = @"
+function Describe-ProviderError($record) {
+    $error = $record.Exception
+    $code = 'HRESULT 0x' + $error.HResult.ToString('X8')
+    while ($null -ne $error) {
+        if ($error -is [ComponentModel.Win32Exception]) { $code = 'Win32 ' + [string]$error.NativeErrorCode; break }
+        $error = $error.InnerException
+    }
+    return $record.Exception.Message + ' (' + $code + ').'
+}
+";
+
+        private const string Preamble = ProviderErrorFunction + @"
 $ErrorActionPreference = 'Stop'
 $WarningPreference = 'SilentlyContinue'
 $ProgressPreference = 'SilentlyContinue'
@@ -418,7 +441,7 @@ BODY
     $status = 5
     if ($_.CategoryInfo.Category -eq 'PermissionDenied' -or $_.CategoryInfo.Category -eq 'SecurityError' -or $_.Exception -is [UnauthorizedAccessException]) { $status = 2 }
     if ($_.CategoryInfo.Category -eq 'ObjectNotFound' -or $_.CategoryInfo.Category -eq 'NotImplemented') { $status = 3 }
-    $reason = $_.Exception.Message + ' (0x' + $_.Exception.HResult.ToString('X8') + ').'
+    $reason = 'Применение настройки: ' + (Describe-ProviderError $_)
     if ($r.Id.StartsWith('defender.')) { $reason += TamperHint }
     Finish $status $reason
 }
@@ -431,11 +454,12 @@ BODY
             return Preamble.Replace("ACTION", action.Id).Replace("BODY", "Import-SystemModule '" + module + "'\n" + body);
         }
 
-        private static ActionResult RunPowerShell(SecurityAction action, string body)
+        private ActionResult RunPowerShell(SecurityAction action, string body)
         {
             ProcessOutput output;
-            try { output = RunRawScript(ScriptFor(action, body)); }
-            catch (FileNotFoundException error) { return SecurityEngine.Result(action, ActionOutcome.Unavailable, error.Message); }
+            try { output = runScript(ScriptFor(action, body), false); }
+            catch (Exception error) when (error.GetBaseException() is FileNotFoundException)
+            { return SecurityEngine.Result(action, ActionOutcome.Unavailable, SecurityEngine.Explain(error)); }
             if (output.ExitCode != 0)
                 return SecurityEngine.Result(action, ActionOutcome.Failed, "PowerShell завершился с кодом " + output.ExitCode.ToString(CultureInfo.InvariantCulture) + ": " + SecurityEngine.Limit(output.Errors));
             try
@@ -459,7 +483,7 @@ BODY
             }
         }
 
-        private sealed class ProcessOutput { internal int ExitCode; internal string Output, Errors; }
+        internal sealed class ProcessOutput { internal int ExitCode; internal string Output, Errors; }
 
         [DataContract]
         private sealed class ProbeSnapshot
@@ -472,42 +496,52 @@ BODY
         private static ProcessOutput RunRawScript(string script, bool readOnly = false)
         {
             string windows = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
-            string executable = Path.Combine(windows, @"System32\WindowsPowerShell\v1.0\powershell.exe");
-            if (!File.Exists(executable)) throw new FileNotFoundException("Системный Windows PowerShell не найден.");
-            string command = Convert.ToBase64String(Encoding.Unicode.GetBytes(script));
-            if (command.Length > 28000) throw new InvalidOperationException("Встроенная команда превышает предел процесса.");
-            using (var process = new Process())
+            var elapsed = Stopwatch.StartNew();
+            string stage = readOnly ? "Запуск проверки защиты" : "Запуск настройки защиты";
+            try
             {
-                process.StartInfo = new ProcessStartInfo(executable, "-NoLogo -NoProfile -NonInteractive -EncodedCommand " + command)
+                using (var process = WindowsPowerShell.Start(script, windows, true))
                 {
-                    UseShellExecute = false,
-                    CreateNoWindow = true,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    StandardOutputEncoding = new UTF8Encoding(false),
-                    StandardErrorEncoding = new UTF8Encoding(false),
-                    WorkingDirectory = windows
-                };
-                if (!process.Start()) throw new InvalidOperationException("Не удалось запустить системный PowerShell.");
-                Task<string> output = process.StandardOutput.ReadToEndAsync();
-                Task<string> errors = process.StandardError.ReadToEndAsync();
-                // Never kill a process in a setter or release the operation mutex
-                // while it can still mutate a setting. The worker owns the lease.
-                if (readOnly)
-                {
-                    if (!process.WaitForExit(45000))
+                    Task<string> output = process.StandardOutput.ReadToEndAsync();
+                    Task<string> errors = process.StandardError.ReadToEndAsync();
+                    Task send = null;
+                    try
                     {
-                        // This child contains only the fixed read-only probe.
-                        // Mutating children never enter this branch.
-                        try { process.Kill(); } catch { }
-                        throw new TimeoutException("Проверка состояния не завершилась за 45 секунд; состояние неизвестно, изменения не начинались.");
+                        stage = readOnly ? "Передача команды проверки защиты" : "Передача команды настройки защиты";
+                        send = WindowsPowerShell.SendScriptAsync(process, script);
+                        if (readOnly && Task.WhenAny(send, Task.Delay(Remaining(elapsed))).GetAwaiter().GetResult() != send)
+                            throw new TimeoutException("Проверка состояния не завершилась за 45 секунд; состояние неизвестно, изменения не начинались.");
+                        send.GetAwaiter().GetResult();
+                        stage = readOnly ? "Ожидание результата проверки защиты" : "Ожидание результата настройки защиты";
+                        if (readOnly && !process.WaitForExit(Remaining(elapsed)))
+                            throw new TimeoutException("Проверка состояния не завершилась за 45 секунд; состояние неизвестно, изменения не начинались.");
+                        if (!readOnly) process.WaitForExit();
+                        return new ProcessOutput { ExitCode = process.ExitCode, Output = output.GetAwaiter().GetResult(), Errors = errors.GetAwaiter().GetResult() };
+                    }
+                    finally
+                    {
+                        // A setter may still be active after a transport error.
+                        // Its worker retains the operation lease until it exits.
+                        if (!process.HasExited)
+                        {
+                            if (readOnly) { try { process.Kill(); } catch { } }
+                            else process.WaitForExit();
+                        }
+                        ObserveFault(output);
+                        ObserveFault(errors);
+                        if (send != null) ObserveFault(send);
                     }
                 }
-                else process.WaitForExit();
-                string stdout = output.GetAwaiter().GetResult();
-                string stderr = errors.GetAwaiter().GetResult();
-                return new ProcessOutput { ExitCode = process.ExitCode, Output = stdout, Errors = stderr };
             }
+            catch (Exception error) { throw new InvalidOperationException(stage + ": " + error.Message, error); }
+        }
+
+        private static int Remaining(Stopwatch elapsed) { return (int)Math.Max(0, 45000 - elapsed.ElapsedMilliseconds); }
+
+        private static void ObserveFault(Task task)
+        {
+            task.ContinueWith(failed => GC.KeepAlive(failed.Exception),
+                TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously);
         }
 
         private const string ScheduledScan = @"
@@ -524,7 +558,7 @@ Finish 0 'Штатная задача выключена; это относит�
 
         // One read-only PowerShell process gathers the provider values shared by
         // all actions. No setter, registry write, elevation or UI is used here.
-        private const string SnapshotScript = @"
+        private const string SnapshotScript = ProviderErrorFunction + @"
 $ErrorActionPreference = 'Stop'
 $WarningPreference = 'SilentlyContinue'
 $ProgressPreference = 'SilentlyContinue'
@@ -543,8 +577,8 @@ $pref = $null
 $status = $null
 $prefError = ''
 $statusError = ''
-try { Import-SystemModule 'Defender'; $pref = Defender\Get-MpPreference -ErrorAction Stop } catch { $prefError = $_.Exception.Message }
-try { Import-SystemModule 'Defender'; $status = Defender\Get-MpComputerStatus -ErrorAction Stop } catch { $statusError = $_.Exception.Message }
+try { Import-SystemModule 'Defender'; $pref = Defender\Get-MpPreference -ErrorAction Stop } catch { $prefError = Describe-ProviderError $_ }
+try { Import-SystemModule 'Defender'; $status = Defender\Get-MpComputerStatus -ErrorAction Stop } catch { $statusError = Describe-ProviderError $_ }
 function AddPreference([string]$id, [string]$name, [string]$target, [bool]$rt = $false) {
     if ($rt) {
         if ($null -eq $status -or $null -eq $status.PSObject.Properties['RealTimeProtectionEnabled']) {
@@ -563,7 +597,7 @@ function AddPreference([string]$id, [string]$name, [string]$target, [bool]$rt = 
         if ($name -eq 'SubmitSamplesConsent' -and $value -eq '0') { AddState $id 0 'Автоматическая отправка уже выключена (AlwaysPrompt); ручное подтверждение сохраняется.'; return }
         if ($value -ne $target) { AddState $id 1 ($name + '=' + $value + '; требуется ' + $target + '.'); return }
         AddState $id 0 ($name + '=' + $value + '; предпочтение уже настроено.')
-    } catch { AddState $id 3 $_.Exception.Message }
+    } catch { AddState $id 3 (Describe-ProviderError $_) }
 }
 AddPreference 'defender.realtime' 'DisableRealtimeMonitoring' 'True' $true
 AddPreference 'defender.cloud' 'MAPSReporting' '0'
@@ -575,7 +609,7 @@ try {
     if ($task.Settings.Enabled -eq $false) { AddState 'defender.scheduled' 0 'Штатная задача уже выключена.' }
     elseif ($task.Settings.Enabled -eq $true) { AddState 'defender.scheduled' 1 'Штатная задача включена.' }
     else { AddState 'defender.scheduled' 3 'Задача не вернула однозначное значение Enabled.' }
-} catch { AddState 'defender.scheduled' 3 ('Не удалось прочитать задачу: ' + $_.Exception.Message) }
+} catch { AddState 'defender.scheduled' 3 ('Не удалось прочитать задачу: ' + (Describe-ProviderError $_)) }
 $localProfiles = $null
 $activeProfiles = $null
 $firewallError = ''
@@ -583,7 +617,7 @@ try {
     Import-SystemModule 'NetSecurity'
     $localProfiles = @(NetSecurity\Get-NetFirewallProfile -PolicyStore PersistentStore -ErrorAction Stop)
     $activeProfiles = @(NetSecurity\Get-NetFirewallProfile -PolicyStore ActiveStore -ErrorAction Stop)
-} catch { $firewallError = $_.Exception.Message }
+} catch { $firewallError = Describe-ProviderError $_ }
 foreach ($name in @('Domain','Private','Public')) {
     $id = 'firewall.' + $name.ToLowerInvariant()
     try {
@@ -595,7 +629,7 @@ foreach ($name in @('Domain','Private','Public')) {
         if ($effective -eq 0) { AddState $id 0 ('Эффективный профиль уже выключен; local=' + $configured + '.'); continue }
         if ($effective -eq 1) { AddState $id 1 ('Эффективный профиль включён; local=' + $configured + '.'); continue }
         AddState $id 3 ('Неизвестное эффективное значение Enabled=' + $effective + '.')
-    } catch { AddState $id 3 $_.Exception.Message }
+    } catch { AddState $id 3 (Describe-ProviderError $_) }
 }
 if ($null -ne $status -and $null -ne $status.PSObject.Properties['IsTamperProtected'] -and $status.IsTamperProtected -eq $false) {
     AddState 'defender.tamper' 0 'Провайдер сообщает Off; защита от изменений не изменяется.' $false
@@ -612,7 +646,7 @@ $puaError = $prefError
 try {
     if ($null -ne $pref -and $null -ne $pref.PSObject.Properties['PUAProtection'] -and $null -ne $pref.PUAProtection) { $puaValue = [int]$pref.PUAProtection }
     else { $puaError = 'Провайдер не вернул PUAProtection.' }
-} catch { $puaError = $_.Exception.Message }
+} catch { $puaError = Describe-ProviderError $_ }
 @{ Actions=@($script:items); PuaProtection=$puaValue; PuaError=$puaError } | Microsoft.PowerShell.Utility\ConvertTo-Json -Compress -Depth 4
 ";
 

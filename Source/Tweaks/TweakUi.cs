@@ -75,7 +75,7 @@ namespace JustEnoughTools.Tweaks
                 var skipped = row.Parts.Where(p => p.State == TweakState.Unavailable).ToArray();
                 if (skipped.Length != 0)
                 {
-                    if (skipped.All(p => (p.Reason ?? "").Contains("не проверено для этой сборки"))) reason = "Не проверено для этой сборки Windows.";
+                    if (skipped.All(p => (p.Reason ?? "").Contains("не входит в поддерживаемый каталог"))) reason = "Настройка отсутствует в поддерживаемом каталоге.";
                     else if (skipped.All(p => (p.Reason ?? "").Contains("политик"))) reason = "Заблокировано политикой Windows.";
                     else if (skipped.Any(p => (p.Reason ?? "").Contains("Батарея не обнаружена"))) reason = "Батарея не обнаружена.";
                     else reason = "Настройка недоступна в этой системе.";

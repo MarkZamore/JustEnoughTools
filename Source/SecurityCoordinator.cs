@@ -70,6 +70,10 @@ namespace JustEnoughTools
                 {
                     throw new InvalidOperationException("Запрос прав администратора отменён. Изменения не выполнялись.", error);
                 }
+                catch (Exception error)
+                {
+                    throw new InvalidOperationException("Запуск рабочего процесса настройки защиты: " + error.Message, error);
+                }
 
                 // Do not kill a worker after acceptance: an in-flight system
                 // operation must be allowed to finish even if its UI disconnects.

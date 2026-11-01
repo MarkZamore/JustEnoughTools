@@ -23,7 +23,7 @@ namespace JustEnoughTools.Tests
             Check(repeated.Format().Split(new[]{"Эта операция уже выполняется"},StringSplitOptions.None).Length==2,
                 "Repeated phase errors must appear once in the category report.");
             Check(WindowsTweakPlatform.BitLockerState(8, true) == 0 && WindowsTweakPlatform.BitLockerState(8, false) == -1,
-                "A verified pre-provisioned encrypted volume needs decryption; an unverified interpretation must stay unknown.");
+                "A supported pre-provisioned encrypted volume needs decryption; an unsupported interpretation must stay unknown.");
             Check(WindowsTweakPlatform.BitLockerState(null, true) == -1 && WindowsTweakPlatform.BitLockerState(0, true) == -1 &&
                 WindowsTweakPlatform.BitLockerState(99, true) == -1 && WindowsTweakPlatform.BitLockerState("2", true) == -1 &&
                 WindowsTweakPlatform.BitLockerState(1.5, true) == -1 && WindowsTweakPlatform.BitLockerState(true, true) == -1 &&
@@ -32,23 +32,40 @@ namespace JustEnoughTools.Tests
             Check(WindowsTweakPlatform.BitLockerState(2, true) == 1 && WindowsTweakPlatform.BitLockerState(4, true) == 3 &&
                 WindowsTweakPlatform.BitLockerState(6, true) == 2,
                 "Fully decrypted, converting and locked volumes must retain distinct states.");
-            Check(TweakCompatibility.Allows("26300.9711", "new-taskbar:IconSizePreference") &&
-                !TweakCompatibility.Allows("26300.9712", "new-taskbar:IconSizePreference") &&
-                !TweakCompatibility.Allows("26300.9711", "resume:IsResumeAllowed"),
-                "Verification evidence must allow only the exact verified build and capability.");
+            var windows11Builds = new[] { "22000", "22621.1", "22631.unknown", "26100.9999", "26300.9457", "26300.9711", "26300.9712", "28000.1" };
+            Check(windows11Builds.All(build => TweakCompatibility.Allows(build, "new-taskbar:IconSizePreference") &&
+                TweakCompatibility.Allows(build, "startup") && TweakCompatibility.Allows(build, "theme") &&
+                WindowsTweakPlatform.BitLockerState(8, TweakCompatibility.Allows(build, "bitlocker-preprovisioned")) == 0),
+                "Known capabilities and actual pre-provisioned state must not depend on an exact Windows patch revision.");
+            Check(new[] { null, "", "unknown.9711", "21999.99999", "19045.unknown" }.All(build =>
+                !TweakCompatibility.Allows(build, "theme") && !TweakCompatibility.Allows(build, "broker:Widgets")),
+                "Unknown OS builds and pre-Windows-11 systems must remain outside the supported platform.");
+            Check(!TweakCompatibility.Allows("26300.9712", "resume:IsResumeAllowed") &&
+                !TweakCompatibility.Allows("28000.1", null) && !TweakCompatibility.Allows("28000.1", "unknown:setting"),
+                "Removing patch pins must not introduce arbitrary capability names.");
             Check(new[] { "new-start:ShowPinnedSection", "new-start:ShowRecentSection", "new-start:ShowAllAppsSection",
                 "new-start:StartMenuSize", "new-start:HideUserInformation", "taskbar:MMTaskbarEnabled",
                 "taskbar:ExpandableTaskbar", "taskbar:TouchpadDesiredVisibility", "tray:SystemTrayChevronVisibility" }
-                .All(capability => TweakCompatibility.Allows("26300.9711", capability) && !TweakCompatibility.Allows("26300.9457", capability)) &&
-                TweakCompatibility.Allows("26300.9711", "battery:IsBatteryPercentageEnabled"),
-                "Approved host evidence must enable only confirmed build and capability mappings.");
+                .All(capability => windows11Builds.All(build => TweakCompatibility.Allows(build, capability))) &&
+                windows11Builds.All(build => TweakCompatibility.Allows(build, "battery:IsBatteryPercentageEnabled")),
+                "The fixed known mapping catalogue must remain available across Windows 11 builds.");
+            Check(TweakSettings.All.All(setting => windows11Builds.All(build => TweakCompatibility.Allows(build,
+                setting.Preference.HasValue ? "broker:" + setting.Preference.Value : setting.Capability + ":" + setting.Name))),
+                "A current product setting was omitted from the fixed cross-build capability catalogue.");
+            var otherBuildPlatform = new FakePlatform { Build = "26300.9712", HasBatteryValue = true };
+            var otherBuildBackend = new WindowsTweakBackend(otherBuildPlatform);
+            Check(otherBuildBackend.Apply(TweakId.Taskbar, "widgets").State == TweakState.Applied &&
+                otherBuildPlatform.PreferenceWrites == 1 && otherBuildBackend.Inspect(TweakId.Startup).All(p => p.State == TweakState.Applied),
+                "A different patch revision must reach the existing broker and startup state checks.");
+            Check(new WindowsTweakBackend(new FakePlatform { Build = "19045.99999" }).Inspect(TweakId.Taskbar)
+                .All(p => p.State == TweakState.Unavailable), "Removing exact patch pins must preserve the Windows 11 requirement.");
             var nativeTip=new TweakRow{Id=TweakId.WindowsUpdate,Parts=new List<TweakPart>{new TweakPart("search-updates",TweakState.Applied)}};
             Check(TweakUi.BlockedTooltip(nativeTip,true)=="Проверка передана Windows."&&TweakUi.SettingHint(TweakId.WindowsUpdate,nativeTip).Contains("Центре обновления"),
                 "Native launch tooltips must describe handoff, not completed installation.");
             var tipRow = new TweakRow { Id = TweakId.Clock };
-            tipRow.Parts.Add(new TweakPart("long-internal-key", TweakState.Unavailable, reason: "Внутренняя поднастройка: не проверено для этой сборки Windows. " + new string('x', 500)));
+            tipRow.Parts.Add(new TweakPart("long-internal-key", TweakState.Unavailable, reason: "Внутренняя поднастройка: не входит в поддерживаемый каталог настроек. " + new string('x', 500)));
             string tooltip = TweakUi.BlockedTooltip(tipRow, true);
-            Check(tooltip.Length < 100 && tooltip.Contains("сборки Windows") && !tooltip.Contains("long-internal-key"),
+            Check(tooltip.Length < 100 && tooltip.Contains("каталоге") && !tooltip.Contains("long-internal-key"),
                 "Blocked tooltips must explain the cause concisely without dumping subaction details.");
             tipRow.Parts.Clear(); tipRow.Parts.Add(new TweakPart("done", TweakState.Applied));
             Check(TweakUi.BlockedTooltip(tipRow, true).Contains("Уже настроено") &&
@@ -138,8 +155,8 @@ namespace JustEnoughTools.Tests
             var fallbackParts = failedNative.Inspect(TweakId.WindowsUpdate);
             Check(fallbackParts.Single(p => p.Key == "search-updates").Administrator && fallbackParts.Any(p => p.Key == "microsoft-update"),
                 "A failed native launch restores administrative WUA and manual Microsoft Update registration.");
-            Check(TweakCompatibility.Allows("26300.9711", "orchestrator-scan") &&
-                !TweakCompatibility.Allows("26300.9457", "orchestrator-scan"), "Native scan must be enabled only on its verified build.");
+            Check(windows11Builds.All(build => TweakCompatibility.Allows(build, "orchestrator-scan")),
+                "The native scan capability must use runtime availability and fallback without an exact-build pin.");
             platform.CertifiedValue = false;
             Check(windows.Inspect(TweakId.Start).All(p => p.State == TweakState.Unavailable), "Unverified registry adapters must never become available.");
             int storedCount = platform.Values.Count;
@@ -204,12 +221,12 @@ namespace JustEnoughTools.Tests
                 "Taskbar mode must use the current string model and its third choice, not an index from the deprecated handler.");
             var legacyPlatform=new FakePlatform {BrokerCertifiedValue=false};var legacyBackend=new WindowsTweakBackend(legacyPlatform);
             Check(legacyBackend.Apply(TweakId.Keyboard,"keyboard-delay").State==TweakState.Applied&&legacyBackend.Apply(TweakId.Mouse,"mouse").State==TweakState.Applied,
-                "Documented SPI settings must remain available when the new broker mapping is not certified.");
+                "Documented SPI settings must remain available when the broker mapping is absent from the fixed catalogue.");
             Check(legacyBackend.Apply(TweakId.StickyKeys,"sticky").State==TweakState.Applied,"An empty broker child set must not falsely mark native Sticky Keys applied.");
             var legacyClipboard=legacyBackend.Apply(TweakId.Clipboard,"EnableClipboardHistory");
             Check(legacyClipboard.State==TweakState.Deferred&&legacyPlatform.Writes==1&&legacyPlatform.PreferenceWrites==0,
-                "A previously certified legacy preference must survive migration without enabling an unverified broker.");
-            Check(legacyBackend.Inspect(TweakId.Start).Any(p=>p.Key=="VisiblePlaces"),"Legacy Start folders must retain their certified fixed format.");
+                "A known legacy preference must survive migration without enabling an unsupported broker.");
+            Check(legacyBackend.Inspect(TweakId.Start).Any(p=>p.Key=="VisiblePlaces"),"Legacy Start folders must retain their known fixed format.");
             var legacyUpdate=legacyBackend.Inspect(TweakId.WindowsUpdate).Single(p=>p.Key=="IsContinuousInnovationOptedIn");
             Check(legacyUpdate.Administrator&&legacyUpdate.State==TweakState.Pending,"Legacy HKLM update preferences must preserve their administrative scope.");
 
@@ -228,7 +245,11 @@ namespace JustEnoughTools.Tests
                 "An unavailable child must be skipped independently of other Start folders.");
             foreach(var setting in TweakSettings.All.Where(s=>s.Preference.HasValue&&!s.PreferenceChoice.HasValue))WindowsPreferenceCatalog.Get(setting.Preference.Value).Validate(setting.PreferenceTarget);
             Check(TweakSettings.All.Where(s=>s.Id==TweakId.WindowsUpdate).All(s=>!s.Administrator),"User update broker settings must stay in the original user process.");
-            Check(!TweakCompatibility.Allows("26300.9711","broker:9999")&&!TweakCompatibility.Allows("26300.9712","broker:Widgets"),"Unknown identifiers/builds must not gain broker certification.");
+            Check(Enum.GetValues(typeof(WindowsPreferenceId)).Cast<WindowsPreferenceId>().All(id =>
+                windows11Builds.All(build => TweakCompatibility.Allows(build, "broker:" + id))),
+                "Known typed broker identifiers must remain discoverable on every Windows 11 build.");
+            Check(new[] { "broker:9999", "broker:0", "broker:", "broker:widgets", "broker:Unknown" }.All(capability =>
+                !TweakCompatibility.Allows("26300.9712", capability)), "Unknown or numeric broker names must stay outside the fixed catalogue.");
 
             foreach (var ids in new[] { new[] { TweakId.Indexing }, new[] { TweakId.Indexing, TweakId.BitLocker, TweakId.WindowsUpdate, TweakId.Startup } })
                 Check(TweakWorker.DecodeRequest(TweakWorker.EncodeRequest(ids)).SequenceEqual(ids), "Fixed worker requests must round trip.");
@@ -270,6 +291,7 @@ namespace JustEnoughTools.Tests
         }
         sealed class FakePlatform : ITweakPlatform
         {
+            internal string Build;
             internal bool BrokerCertifiedValue=true;
             internal bool CertifiedValue = true, UpdateManagedValue, Lie, HasBatteryValue, TrayReadFails, IgnoreTrayWrites;
             internal int Searches, Writes, TrayWrites, TrayReads, PreferenceWrites, NativeSearchState;
@@ -278,8 +300,9 @@ namespace JustEnoughTools.Tests
             internal Dictionary<WindowsPreferenceId,WindowsPreferenceSnapshot> Preferences=new Dictionary<WindowsPreferenceId,WindowsPreferenceSnapshot>();
             internal Dictionary<string, RegistryDatum> Values = new Dictionary<string, RegistryDatum>();
             readonly HashSet<string> applied = new HashSet<string>();
-            public bool Certified(string feature) { return CertifiedValue&&(!feature.StartsWith("broker:")||BrokerCertifiedValue); }
-            public bool IsWindows11 { get { return true; } }
+            public bool Certified(string feature) { return CertifiedValue&&(!feature.StartsWith("broker:")||BrokerCertifiedValue)&&
+                (Build==null||TweakCompatibility.Allows(Build,feature)); }
+            public bool IsWindows11 { get { return Build==null||TweakCompatibility.IsWindows11(Build); } }
             public bool HasBattery { get { return HasBatteryValue; } }
             public bool UpdateManaged { get { return UpdateManagedValue; } }
             public RegistryDatum Read(bool machine, string path, string name) { RegistryDatum value; return Values.TryGetValue(path + "/" + name, out value) ? value : new RegistryDatum(); }

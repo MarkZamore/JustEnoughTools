@@ -29,17 +29,22 @@ namespace JustEnoughTools.Tweaks
                 using (var key = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Windows NT\CurrentVersion"))
                 {
                     int number, revision;
-                    if (key != null && int.TryParse(Convert.ToString(key.GetValue("CurrentBuildNumber")), out number) &&
-                        int.TryParse(Convert.ToString(key.GetValue("UBR")), out revision))
-                        build = number.ToString(System.Globalization.CultureInfo.InvariantCulture) + "." + revision.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                    if (key != null && int.TryParse(Convert.ToString(key.GetValue("CurrentBuildNumber")), out number))
+                    {
+                        build = number.ToString(System.Globalization.CultureInfo.InvariantCulture) + ".unknown";
+                        // The patch revision is diagnostic data, not a
+                        // prerequisite for discovering a known setting.
+                        if (int.TryParse(Convert.ToString(key.GetValue("UBR")), out revision))
+                            build = number.ToString(System.Globalization.CultureInfo.InvariantCulture) + "." + revision.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                    }
                 }
             }
             catch (Exception error) when (error is UnauthorizedAccessException || error is System.Security.SecurityException || error is IOException) { }
         }
         internal string Build { get { return build; } }
-        public bool IsWindows11 { get { int number; return int.TryParse(build.Split('.')[0], out number) && number >= 22000; } }
-        // Exact build/capability pairs only. An untested feature is never enabled
-        // merely because a similar registry name exists on the host.
+        public bool IsWindows11 { get { return TweakCompatibility.IsWindows11(build); } }
+        // A fixed capability catalogue prevents arbitrary setting names. The
+        // installed API and each setting's state determine actual availability.
         public bool Certified(string capability) { return TweakCompatibility.Allows(build, capability); }
         public bool HasBattery
         {
@@ -152,7 +157,7 @@ namespace JustEnoughTools.Tweaks
             }
             finally { Release(item); Release(folder); Release(shell); }
         }
-        internal static int BitLockerState(object status, bool preprovisionedVerified)
+        internal static int BitLockerState(object status, bool preprovisionedSupported)
         {
             if (!(status is byte || status is sbyte || status is short || status is ushort || status is int || status is uint || status is long || status is ulong)) return -1;
             long number;
@@ -161,7 +166,7 @@ namespace JustEnoughTools.Tweaks
             {
                 case 2: return 1;
                 case 1: case 3: case 5: return 0;
-                case 8: return preprovisionedVerified ? 0 : -1;
+                case 8: return preprovisionedSupported ? 0 : -1;
                 case 4: return 3;
                 case 6: return 2;
                 default: return -1;
@@ -517,19 +522,9 @@ try {
 
     internal static class TweakCompatibility
     {
-        // Verified Windows mappings; guest and explicitly approved host evidence are separated in Tests/TWEAKER.md.
-        static readonly HashSet<string> Verified = new HashSet<string>(StringComparer.Ordinal)
-        {
-            "theme", "clipboard:EnableClipboardHistory", "new-start:ShowRecentList",
-            "start:Start_TrackDocs", "start:Start_IrisRecommendations", "start:Start_AccountNotifications", "start:VisiblePlaces",
-            "taskbar:ShowTaskViewButton", "taskbar:SearchboxTaskbarMode", "emoji:EmojiAndMoreIconVisibilityState",
-            "touch-keyboard:TipbandDesiredVisibility",
-            "clock:ShowClockInNotificationCenter",
-            "windows-update:IsContinuousInnovationOptedIn", "windows-update:AllowMUUpdateService",
-            "windows-update:IsExpedited", "windows-update:AllowAutoWindowsUpdateDownloadOverMeteredNetwork",
-            "windows-update:RestartNotificationsAllowed2"
-        };
-        static readonly HashSet<string> Verified9711 = new HashSet<string>(StringComparer.Ordinal)
+        // Known names remain closed across Windows 11 releases. Historical
+        // test builds are evidence, not an execution allowlist.
+        static readonly HashSet<string> KnownCapabilities = new HashSet<string>(StringComparer.Ordinal)
         {
             "theme", "startup", "bitlocker-preprovisioned", "orchestrator-scan", "clipboard:EnableClipboardHistory", "new-start:ShowRecentList",
             "new-start:ShowPinnedSection", "new-start:ShowRecentSection", "new-start:ShowAllAppsSection",
@@ -550,10 +545,21 @@ try {
         };
         internal static bool Allows(string build, string capability)
         {
+            if (!IsWindows11(build) || String.IsNullOrEmpty(capability)) return false;
             WindowsPreferenceId id;
-            if(build=="26300.9711"&&capability.StartsWith("broker:",StringComparison.Ordinal)&&
-                Enum.TryParse(capability.Substring(7),out id)&&Enum.IsDefined(typeof(WindowsPreferenceId),id))return true;
-            return build == "26300.9457" ? Verified.Contains(capability) : build == "26300.9711" && Verified9711.Contains(capability);
+            if (capability.StartsWith("broker:", StringComparison.Ordinal))
+            {
+                string name = capability.Substring(7);
+                return Enum.TryParse(name, out id) && Enum.IsDefined(typeof(WindowsPreferenceId), id) &&
+                    String.Equals(name, id.ToString(), StringComparison.Ordinal);
+            }
+            return KnownCapabilities.Contains(capability);
+        }
+        internal static bool IsWindows11(string build)
+        {
+            int number;
+            return !String.IsNullOrEmpty(build) && int.TryParse(build.Split('.')[0],
+                System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out number) && number >= 22000;
         }
     }
 }

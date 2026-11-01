@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.IO;
 using System.Linq;
 using System.Net;
@@ -26,6 +27,7 @@ namespace JustEnoughTools.Tests
             FullDownloadUsesOnlyOnePackage().GetAwaiter().GetResult();
             SameAndOlderReleasesAreIgnored().GetAwaiter().GetResult();
             FailedNewDownloadKeepsPreparedUpdate().GetAwaiter().GetResult();
+            FailedManifestKeepsErrorDetails().GetAwaiter().GetResult();
             DeltaRoundTripAndFallback().GetAwaiter().GetResult();
             ChangedBaseCannotBePatched();
             CancellationDoesNotPublish().GetAwaiter().GetResult();
@@ -234,6 +236,28 @@ namespace JustEnoughTools.Tests
                     Check(service.HasPreparedUpdate, "A failed new download discarded the cached update.");
                     Check(File.ReadAllBytes(fixture.Package).SequenceEqual(before), "Network failure rewrote the cached package.");
                     Check(final != null && final.Ready && final.Text == UpdateProgressLine.Ready(2), "The cached release was not retained in the UI.");
+                    Check(final.Details != null && final.Details.Contains("Загрузка и проверка обновления") && final.Details.Contains("HRESULT=0x"),
+                        "Keeping a cached update hid the newer download failure details.");
+                }
+            }
+        }
+
+        private static async Task FailedManifestKeepsErrorDetails()
+        {
+            using (var fixture = new Fixture())
+            {
+                var handler = new FakeHandler(Manifest(Exe(2), 2), Exe(2), null)
+                { ManifestFailure = new Win32Exception(5, "Тестовый отказ доступа к сети.") };
+                using (var client = new HttpClient(handler))
+                using (var service = new UpdateService(fixture.Executable, 1, client))
+                {
+                    UpdateStatus final = null;
+                    service.StatusChanged += value => final = value;
+                    await service.CheckAndPrepareAsync(CancellationToken.None);
+                    Check(final != null && !final.Ready && final.Text == UpdateProgressLine.CheckFailed() &&
+                        final.Details.Contains("Проверка манифеста обновления") && final.Details.Contains("Win32=5"),
+                        "A handled manifest failure lost its stage/native code before reaching the UI.");
+                    Check(!service.HasPreparedUpdate && !File.Exists(fixture.Package), "A failed manifest check published an update.");
                 }
             }
         }
@@ -338,11 +362,16 @@ namespace JustEnoughTools.Tests
             internal int ExecutableDownloads;
             internal int PatchDownloads;
             internal bool BlockExecutable;
+            internal Exception ManifestFailure;
             internal readonly TaskCompletionSource<bool> ExecutableStarted = new TaskCompletionSource<bool>();
             protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token)
             {
                 byte[] content;
-                if (request.RequestUri.AbsolutePath.EndsWith("/update.json", StringComparison.Ordinal)) content = UpdatePackage.SerializeManifest(_manifest);
+                if (request.RequestUri.AbsolutePath.EndsWith("/update.json", StringComparison.Ordinal))
+                {
+                    if (ManifestFailure != null) throw ManifestFailure;
+                    content = UpdatePackage.SerializeManifest(_manifest);
+                }
                 else if (request.RequestUri.AbsolutePath.EndsWith(".bsdiff", StringComparison.Ordinal)) { PatchDownloads++; content = _patch; }
                 else
                 {

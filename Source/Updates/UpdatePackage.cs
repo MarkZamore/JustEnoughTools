@@ -4,6 +4,7 @@ using System.Reflection;
 using System.Runtime.Serialization.Json;
 using System.Security.Cryptography;
 using System.Text;
+using JustEnoughTools.Platform;
 
 namespace JustEnoughTools.Updates
 {
@@ -119,7 +120,7 @@ namespace JustEnoughTools.Updates
             }
             catch (Exception ex) when (ex is IOException || ex is InvalidDataException || ex is UnauthorizedAccessException || ex is System.Runtime.Serialization.SerializationException || ex is ArgumentException || ex is System.Xml.XmlException || ex is OverflowException)
             {
-                error = ex.Message;
+                error = WindowsPowerShell.Explain(ex);
                 return false;
             }
         }

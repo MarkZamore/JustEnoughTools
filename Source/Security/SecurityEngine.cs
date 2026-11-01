@@ -5,6 +5,7 @@ using System.Security;
 using System.Security.AccessControl;
 using System.Security.Principal;
 using System.Threading;
+using JustEnoughTools.Platform;
 
 namespace JustEnoughTools.Security
 {
@@ -149,7 +150,7 @@ namespace JustEnoughTools.Security
                 catch (Exception error)
                 {
                     report.Results.Add(Result(action,
-                        error is UnauthorizedAccessException || error is SecurityException ? ActionOutcome.Blocked : ActionOutcome.Failed,
+                        WindowsPowerShell.IsAccessDenied(error) ? ActionOutcome.Blocked : ActionOutcome.Failed,
                         Explain(error)));
                 }
             }
@@ -173,7 +174,7 @@ namespace JustEnoughTools.Security
 
         internal static string Explain(Exception error)
         {
-            return Limit(error.Message + " (0x" + error.HResult.ToString("X8") + ").");
+            return Limit(WindowsPowerShell.Explain(error));
         }
 
         internal static string Limit(string value)

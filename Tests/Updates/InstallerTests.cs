@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
@@ -8,6 +9,8 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
+using System.Threading.Tasks;
+using JustEnoughTools.Platform;
 using JustEnoughTools.Updates;
 
 namespace JustEnoughTools.Tests
@@ -21,6 +24,7 @@ namespace JustEnoughTools.Tests
         {
             _assertions = 0;
             Scenario("normal exit without restart", NormalExitInstallsWithoutRestart);
+            Scenario("locked package diagnostics", LockedPackagePreservesNativeError);
             Scenario("explicit restart", ExplicitRestartStartsTheReplacement);
             Scenario("active restart requests and serialization", ActiveRequestsUseTheExistingInstaller);
             Scenario("external operation lease blocks installation", ExternalOperationLeaseBlocksInstallation);
@@ -30,6 +34,10 @@ namespace JustEnoughTools.Tests
             Scenario("transient target lock", TransientTargetLockIsRetried);
             Scenario("missing target recovery", MissingTargetIsRecovered);
             Scenario("cancelled handoff", CancelledHandoffNeverMutates);
+            Scenario("denied helper launch", DeniedHelperLaunchPreservesUpdate);
+            Scenario("partial helper input", PartialHelperInputNeverCommits);
+            Scenario("failed transfer after readiness", FailedTransferNeverCommits);
+            Scenario("pending helper input timeout", PendingTransferTimesOutWithoutCommit);
             Scenario("sole payload preservation after failure", FailurePreservesTheOnlyValidPayload);
             return _assertions;
         }
@@ -248,13 +256,11 @@ namespace JustEnoughTools.Tests
                         @"Local\JustEnoughTools.Update." + UpdateService.GetInstanceKey(fixture.Target), key + ".Ready", key + ".Intent", key + ".Cancel",
                         source.Id, source.StartTime.ToUniversalTime().Ticks, (long)fixture.Payload.Length,
                         fixture.NewHash, 2, 1, fixture.OldHash, false });
-                    string shell = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
-                    using (var helper = Process.Start(new ProcessStartInfo(shell,
-                        "-NoLogo -NoProfile -NonInteractive -EncodedCommand " + UpdateInstaller.EncodeScript(script))
-                    { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true }))
+                    using (var helper = WindowsPowerShell.Start(script, fixture.AppDirectory, false))
                     {
                         try
                         {
+                            WindowsPowerShell.SendScriptAsync(helper, script).GetAwaiter().GetResult();
                             if (shouldStage) Check(ready.WaitOne(15000), "The cancellation probe never staged the helper.");
                             else
                             {
@@ -280,6 +286,142 @@ namespace JustEnoughTools.Tests
                     }
                 }
             }
+        }
+
+        private static void DeniedHelperLaunchPreservesUpdate()
+        {
+            using (var fixture = new Fixture())
+            {
+                string packageHash = UpdatePackage.HashFile(fixture.Package);
+                string error;
+                Check(!UpdateInstaller.TrySchedule(fixture.Target, fixture.Package, 1, false, out error,
+                    (script, directory, capture) => { throw new Win32Exception(5, "Denied test launch."); },
+                    WindowsPowerShell.SendScriptAsync), "A denied launch was accepted.");
+                Check(error.Contains("Запуск установщика") && error.Contains("Win32=5"),
+                    "The denied launch lost its stage or native access-denied code: " + error);
+                CheckUncommittedUpdate(fixture, packageHash);
+            }
+        }
+
+        private static void LockedPackagePreservesNativeError()
+        {
+            using (var fixture = new Fixture())
+            {
+                string packageHash = UpdatePackage.HashFile(fixture.Package);
+                string error;
+                using (var locked = new FileStream(fixture.Package, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+                    Check(!UpdateInstaller.TrySchedule(fixture.Target, fixture.Package, 1, false, out error) &&
+                        error.Contains("Проверка пакета обновления") && error.Contains("HRESULT=0x80070020"),
+                        "A package sharing violation lost its original error code or validation stage.");
+                CheckUncommittedUpdate(fixture, packageHash);
+            }
+        }
+
+        private static void PartialHelperInputNeverCommits()
+        {
+            using (var fixture = new Fixture())
+            {
+                string packageHash = UpdatePackage.HashFile(fixture.Package);
+                // This is a complete, valid statement: a plain streaming parser
+                // would execute it even when EOF cuts off the rest of the script.
+                string prefix = "[IO.File]::Delete('" + fixture.Package.Replace("'", "''") + "');\r\n";
+                string error;
+                Check(!UpdateInstaller.TrySchedule(fixture.Target, fixture.Package, 1, false, out error,
+                    (script, directory, capture) => WindowsPowerShell.Start(prefix + script, directory, capture),
+                    (helper, script) =>
+                    {
+                        Stream input = helper.StandardInput.BaseStream;
+                        try
+                        {
+                            byte[] bytes = new UTF8Encoding(false, true).GetBytes(prefix);
+                            input.Write(bytes, 0, bytes.Length);
+                            input.Flush();
+                        }
+                        finally { input.Dispose(); }
+                        return Task.CompletedTask;
+                    }), "A truncated helper script was committed.");
+                Check(error.Contains("Ожидание готовности") && error.Contains("Код завершения"),
+                    "Partial input did not produce a contextual early-exit report: " + error);
+                CheckUncommittedUpdate(fixture, packageHash);
+            }
+        }
+
+        private static void FailedTransferNeverCommits()
+        {
+            using (var fixture = new Fixture())
+            {
+                string packageHash = UpdatePackage.HashFile(fixture.Package);
+                string error;
+                Check(!UpdateInstaller.TrySchedule(fixture.Target, fixture.Package, 1, false, out error,
+                    WindowsPowerShell.Start, async (helper, script) =>
+                    {
+                        await WindowsPowerShell.SendScriptAsync(helper, script).ConfigureAwait(false);
+                        Match handoff = Regex.Match(script, @"\$handoff = .*Decode '([^']+)'");
+                        if (!handoff.Success) throw new InvalidOperationException("The test could not find the handoff event.");
+                        string name = Encoding.UTF8.GetString(Convert.FromBase64String(handoff.Groups[1].Value));
+                        using (var ready = EventWaitHandle.OpenExisting(name))
+                            if (!ready.WaitOne(5000)) throw new TimeoutException("The test helper never became ready.");
+                        throw new IOException("Injected stdin completion failure after readiness.");
+                    }), "Readiness overrode the failed stdin transfer.");
+                Check(error.Contains("Передача команд") && error.Contains("Injected stdin completion failure"),
+                    "The failed transfer lost its stage or cause: " + error);
+                CheckUncommittedUpdate(fixture, packageHash);
+            }
+        }
+
+        private static void CheckUncommittedUpdate(Fixture fixture, string packageHash)
+        {
+            Check(UpdatePackage.HashFile(fixture.Target) == fixture.OldHash,
+                "An uncommitted launch changed the original executable.");
+            Check(File.Exists(fixture.Package) && UpdatePackage.HashFile(fixture.Package) == packageHash,
+                "An uncommitted launch changed the prepared package.");
+            Check(!UpdateInstaller.IsActive(fixture.Target) && !UpdateService.IsOperationInProgress(fixture.Target),
+                "An uncommitted launch retained an operation lease.");
+            fixture.CheckNoTransientAppArtifacts();
+        }
+
+        private static void PendingTransferTimesOutWithoutCommit()
+        {
+            using (var fixture = new Fixture())
+            {
+                string packageHash = UpdatePackage.HashFile(fixture.Package);
+                var pending = new TaskCompletionSource<bool>();
+                int helperId = 0;
+                string error;
+                var elapsed = Stopwatch.StartNew();
+                try
+                {
+                    Check(!UpdateInstaller.TrySchedule(fixture.Target, fixture.Package, 1, false, out error,
+                        (script, directory, capture) =>
+                        {
+                            var helper = WindowsPowerShell.Start(script, directory, capture);
+                            helperId = helper.Id;
+                            return helper;
+                        }, (helper, script) => pending.Task), "A pending stdin transfer was committed.");
+                    Check(error.Contains("Передача команд") && error.Contains("за отведённое время"),
+                        "A pending transfer did not report its startup timeout: " + error);
+                    Check(elapsed.ElapsedMilliseconds >= 11000 && elapsed.ElapsedMilliseconds < 25000,
+                        "The pending transfer did not respect the bounded 12-second handoff budget.");
+                    Check(helperId != 0 && HasExited(helperId), "A timed-out input transfer left its helper alive.");
+                    CheckUncommittedUpdate(fixture, packageHash);
+                }
+                finally
+                {
+                    // The production timeout installs an observer before returning.
+                    // Simulate the later broken-pipe completion after its helper exits.
+                    pending.SetException(new IOException("Injected late pipe failure after timeout."));
+                }
+                Check(pending.Task.IsFaulted, "The late transfer-failure probe did not run.");
+            }
+        }
+
+        private static bool HasExited(int processId)
+        {
+            try
+            {
+                using (var process = Process.GetProcessById(processId)) return process.HasExited;
+            }
+            catch (ArgumentException) { return true; }
         }
 
         private static void FailurePreservesTheOnlyValidPayload()

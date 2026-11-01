@@ -358,7 +358,7 @@ namespace JustEnoughTools.Tweaks
                     }
             return false;
         }
-        static TweakPart Unverified(string key, string title) { return new TweakPart(key, TweakState.Unavailable, reason: title + ": не проверено для этой сборки Windows."); }
+        static TweakPart Unverified(string key, string title) { return new TweakPart(key, TweakState.Unavailable, reason: title + ": не входит в поддерживаемый каталог настроек."); }
         static string NativeReason(string key, TweakState state)
         {
             string title;

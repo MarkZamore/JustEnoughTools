@@ -80,7 +80,7 @@ namespace JustEnoughTools.Runner
             {
                 ShowProblems((executionStarted
                     ? "Выполнение прервано; часть настроек могла измениться.\n\n"
-                    : "Изменения не начинались.\n\n") + error.Message);
+                    : "Изменения не начинались.\n\n") + SecurityEngine.Explain(error));
                 return 1;
             }
         }

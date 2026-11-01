@@ -12,6 +12,7 @@ using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using BsDiff;
+using JustEnoughTools.Platform;
 
 namespace JustEnoughTools.Updates
 {
@@ -118,6 +119,7 @@ namespace JustEnoughTools.Updates
                 CancellationToken cancel = linked.Token;
                 PreparedUpdate cached = null;
                 int? downloadingRelease = null;
+                string stage = "Проверка сохранённого пакета обновления";
                 try
                 {
                     cancel.ThrowIfCancellationRequested();
@@ -133,6 +135,7 @@ namespace JustEnoughTools.Updates
                     }
                     if (cached != null) ReportReady(cached.Manifest.ReleaseNumber);
                     else Report(UpdateProgressLine.Checking());
+                    stage = "Проверка манифеста обновления";
                     UpdateManifest manifest = await CheckManifestAsync(cached != null, cancel).ConfigureAwait(false);
                     cancel.ThrowIfCancellationRequested();
                     if (manifest.ReleaseNumber <= _releaseNumber)
@@ -147,6 +150,7 @@ namespace JustEnoughTools.Updates
                     }
                     downloadingRelease = manifest.ReleaseNumber;
                     Report(UpdateProgressLine.Starting(manifest.ReleaseNumber), 0);
+                    stage = "Загрузка и проверка обновления";
                     byte[] payload = await PreparePayloadAsync(manifest, cancel).ConfigureAwait(false);
                     cancel.ThrowIfCancellationRequested();
                     lock (_gate)
@@ -154,7 +158,9 @@ namespace JustEnoughTools.Updates
                         cancel.ThrowIfCancellationRequested();
                         if (_disposed || _installScheduled) return;
                         if (UpdateInstaller.IsActive(_executablePath)) throw new IOException("Установка обновления уже выполняется.");
+                        stage = "Сохранение пакета обновления";
                         UpdatePackage.Write(_packagePath, payload, manifest);
+                        stage = "Проверка сохранённого пакета обновления";
                         PreparedUpdate written;
                         string validationError;
                         if (!UpdatePackage.TryRead(_packagePath, _releaseNumber, out written, out validationError))
@@ -164,7 +170,7 @@ namespace JustEnoughTools.Updates
                     ReportReady(manifest.ReleaseNumber);
                 }
                 catch (OperationCanceledException) when (cancel.IsCancellationRequested) { }
-                catch (Exception)
+                catch (Exception error)
                 {
                     PreparedUpdate stillReady;
                     string validationError;
@@ -175,8 +181,9 @@ namespace JustEnoughTools.Updates
                         _hasPrepared = ready;
                         if (!ready && !UpdateInstaller.IsActive(_executablePath)) UpdatePackage.DeleteInvalidIfSafe(_packagePath, _executablePath);
                     }
-                    if (ready) ReportReady(stillReady.Manifest.ReleaseNumber);
-                    else Report(downloadingRelease.HasValue ? UpdateProgressLine.DownloadFailed(downloadingRelease.Value) : UpdateProgressLine.CheckFailed());
+                    string details = WindowsPowerShell.Explain(error, stage);
+                    if (ready) ReportReady(stillReady.Manifest.ReleaseNumber, details);
+                    else Report(downloadingRelease.HasValue ? UpdateProgressLine.DownloadFailed(downloadingRelease.Value) : UpdateProgressLine.CheckFailed(), details: details);
                 }
                 finally
                 {
@@ -224,6 +231,7 @@ namespace JustEnoughTools.Updates
                 PreparedUpdate prepared;
                 if (!UpdatePackage.TryRead(_packagePath, _releaseNumber, out prepared, out error))
                 {
+                    error = "Проверка пакета обновления: " + (string.IsNullOrWhiteSpace(error) ? "Подготовленный пакет недоступен." : error);
                     _hasPrepared = false;
                     UpdatePackage.DeleteInvalidIfSafe(_packagePath, _executablePath);
                     return false;
@@ -475,15 +483,15 @@ namespace JustEnoughTools.Updates
             return client;
         }
 
-        private void ReportReady(int release)
+        private void ReportReady(int release, string details = null)
         {
-            if (!UpdateInstaller.IsActive(_executablePath) && IsOperationInProgress(_executablePath)) ReportBlocked();
-            else Report(UpdateProgressLine.Ready(release), 1d, true);
+            if (!UpdateInstaller.IsActive(_executablePath) && IsOperationInProgress(_executablePath)) ReportBlocked(details);
+            else Report(UpdateProgressLine.Ready(release), 1d, true, details);
         }
 
-        private void ReportBlocked() { Report("Обновление отложено до завершения операции с защитой Windows", 1d, true); }
+        private void ReportBlocked(string details = null) { Report("Обновление отложено до завершения операции с защитой Windows", 1d, true, details); }
 
-        private void Report(string text, double? fraction = null, bool ready = false)
+        private void Report(string text, double? fraction = null, bool ready = false, string details = null)
         {
             Action<UpdateStatus> handler;
             lock (_gate)
@@ -491,7 +499,7 @@ namespace JustEnoughTools.Updates
                 if (_disposed || _installScheduled) return;
                 handler = StatusChanged;
             }
-            if (handler != null) handler(new UpdateStatus(text, fraction, ready));
+            if (handler != null) handler(new UpdateStatus(text, fraction, ready, details));
         }
 
         public void Dispose()

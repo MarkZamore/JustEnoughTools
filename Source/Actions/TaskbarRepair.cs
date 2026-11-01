@@ -2,7 +2,6 @@
 using System.Linq;
 using System.Threading;
 using WindowsPreferences;
-using Microsoft.Win32;
 
 namespace JustEnoughTools.Actions
 {
@@ -17,9 +16,6 @@ namespace JustEnoughTools.Actions
         {
             try
             {
-                using(var version=Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Windows NT\CurrentVersion"))
-                    if(version==null||Convert.ToString(version.GetValue("CurrentBuildNumber"))!="26300"||!Equals(version.GetValue("UBR"),9711))
-                        return Failure("Брокер исправления панели задач не проверен для этой сборки Windows.");
                 using (var mutex = new Mutex(false, @"Local\JustEnoughTools.TaskbarRepair"))
                 {
                     bool acquired;

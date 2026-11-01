@@ -27,7 +27,21 @@ namespace JustEnoughTools.Tests
             string unicode = "Привет 中文 \U0001F600";
             Output result = Run("[Console]::Out.Write('" + unicode + "')");
             Require(result.ExitCode == 0 && result.Text == unicode && result.Errors.Length == 0,
-                "The stdin transport changed Unicode or added prompts/BOMs."); checks++;
+                "The stdin transport changed Unicode or added prompts/BOMs. " + Describe(result)); checks++;
+
+            // Isolated Framework parents exercise the StandardInput writer's
+            // own preamble without changing this test runner's console encoding.
+            foreach (string encoding in new[] { "[Text.Encoding]::GetEncoding(866)", "[Text.Encoding]::GetEncoding(437)",
+                "[Text.UTF8Encoding]::new($false)", "[Text.UTF8Encoding]::new($true)", "[Text.Encoding]::Unicode" })
+            {
+                string assembly = typeof(PowerShellTests).Assembly.Location.Replace("'", "''");
+                string probe = "[Console]::InputEncoding=" + encoding + ";$a=[Reflection.Assembly]::LoadFrom('" + assembly +
+                    "');$m=$a.GetType('JustEnoughTools.Tests.PowerShellTests').GetMethod('CheckParentEncoding',[Reflection.BindingFlags]'NonPublic,Static');" +
+                    "[Console]::Out.Write($m.Invoke($null,@()))";
+                result = Run(probe);
+                Require(result.ExitCode == 0 && result.Text == "ENCODING-OK" && result.Errors.Length == 0,
+                    "The stdin transport depends on parent console encoding " + encoding + ". " + Describe(result)); checks++;
+            }
 
             string full = "[Console]::Out.Write('PREFIX-RAN'); [Console]::Out.Write('TAIL-RAN')";
             foreach (byte[] incomplete in new[] { new byte[0], Encoding.UTF8.GetBytes("[Console]::Out.Write('PREFIX-RAN')") })
@@ -110,6 +124,30 @@ namespace JustEnoughTools.Tests
                 await input.FlushAsync().ConfigureAwait(false);
             }
             finally { input.Dispose(); }
+        }
+
+        private static string CheckParentEncoding()
+        {
+            Require(Environment.Version.Major == 4, "The encoding probe requires a Framework parent.");
+            string unicode = "Привет 中文 \U0001F600";
+            Output result = Run("[Console]::Out.Write('" + unicode + "')");
+            Require(result.ExitCode == 0 && result.Text == unicode && result.Errors.Length == 0,
+                "Unicode or stream preamble changed. " + Describe(result));
+            string full = "[Console]::Out.Write('PREFIX-RAN');";
+            result = Run(full, Encoding.UTF8.GetBytes(full.Substring(0, full.Length - 1)));
+            Require(result.ExitCode != 0 && result.Text.Length == 0 && result.Errors.Contains("Incomplete script input."),
+                "A parent preamble compensated for a missing script character. " + Describe(result));
+            result = Run("'AA'", new byte[] { 0x27, 0xC0, 0xAF, 0x27 });
+            Require(result.ExitCode != 0 && result.Text.Length == 0 && result.Errors.Length > 0,
+                "A parent preamble enabled fallback from strict UTF-8. " + Describe(result));
+            return "ENCODING-OK";
+        }
+
+        private static string Describe(Output result)
+        {
+            string prefix = result.Text.Substring(0, Math.Min(32, result.Text.Length));
+            return "Exit=" + result.ExitCode + "; stdout UTF-8 prefix=" + BitConverter.ToString(Encoding.UTF8.GetBytes(prefix)) +
+                "; stdout length=" + result.Text.Length + "; stderr=" + result.Errors;
         }
 
         private static void Require(bool condition, string message)

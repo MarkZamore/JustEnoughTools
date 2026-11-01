@@ -26,9 +26,21 @@ namespace JustEnoughTools.Platform
             string system = Environment.Is64BitOperatingSystem && !Environment.Is64BitProcess ? "Sysnative" : "System32";
             string executable = Path.Combine(windows, system + @"\WindowsPowerShell\v1.0\powershell.exe");
             if (!File.Exists(executable)) throw new FileNotFoundException("Системный Windows PowerShell не найден.", executable);
-            string bootstrap = "[Console]::InputEncoding = [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false, $true); " +
-                "$jetScript=[Console]::In.ReadToEnd(); if ($jetScript.Length -ne " + script.Length.ToString(CultureInfo.InvariantCulture) +
-                ") { throw 'Incomplete script input.' }; & ([ScriptBlock]::Create($jetScript))";
+            // Framework Process.Start initializes an AutoFlush StandardInput
+            // writer using the parent's Console.InputEncoding. That writer
+            // emits its preamble before we can use the raw byte stream. Consume
+            // exactly that known transport prefix, before strict UTF-8 decoding;
+            // it must never compensate for a missing character in the script.
+            byte[] preamble = Console.InputEncoding.GetPreamble();
+            string prefixCheck = preamble.Length == 0 ? "" :
+                "foreach($v in @(" + String.Join(",", Array.ConvertAll(preamble, value => value.ToString(CultureInfo.InvariantCulture))) +
+                ")){if($i.ReadByte()-ne$v){throw 'Incomplete script input.'}};";
+            string bootstrap = "$ErrorActionPreference='Stop';$ProgressPreference='SilentlyContinue';" +
+                "$u=[Text.UTF8Encoding]::new($false,$true);[Console]::InputEncoding=[Console]::OutputEncoding=$u;" +
+                "$i=[Console]::OpenStandardInput();" + prefixCheck +
+                "$r=[IO.StreamReader]::new($i,$u,$false);$jetScript=$r.ReadToEnd();$r.Dispose();if($jetScript.Length-ne" +
+                script.Length.ToString(CultureInfo.InvariantCulture) +
+                "){throw 'Incomplete script input.'};&([ScriptBlock]::Create($jetScript))";
             var start = new ProcessStartInfo(executable, "-NoLogo -NoProfile -NonInteractive -Command \"" + bootstrap + "\"")
             {
                 UseShellExecute = false,

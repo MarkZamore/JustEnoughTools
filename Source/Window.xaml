@@ -56,7 +56,7 @@
                         CornerRadius="{StaticResource Radius.Panel}" Padding="{StaticResource Pad.Panel}">
                     <Grid>
                         <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                        <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+                        <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
                         <Grid Grid.Row="0" Grid.Column="0" VerticalAlignment="Center" Margin="0,0,16,0">
                             <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
                             <Path x:Name="ProtectionIcon" Width="20" Height="20" Margin="{StaticResource Gap.CategoryIcon}" Stretch="Uniform"
@@ -82,9 +82,16 @@
                         <TextBlock x:Name="ProtectionDescription" Grid.Row="1" Grid.Column="1" Style="{StaticResource Caption}"
                                    Margin="0,8,0,0" HorizontalAlignment="Right" VerticalAlignment="Center"
                                    Text="Требуются права администратора"/>
-                        <TextBlock x:Name="ProtectionReport" Grid.Row="2" Grid.ColumnSpan="2" Style="{StaticResource Caption}"
+                        <Grid x:Name="ProtectionTamperHelp" Grid.Row="2" Grid.ColumnSpan="2"
+                              Margin="{StaticResource Gap.Subtitle}" Visibility="Collapsed">
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                            <TextBlock x:Name="ProtectionTamperHint" Style="{StaticResource Caption}" TextWrapping="Wrap" VerticalAlignment="Center"/>
+                            <Button x:Name="RefreshProtectionButton" Grid.Column="1" Content="Проверить снова" VerticalAlignment="Center"
+                                    Margin="12,0,0,0" ToolTip="Прочитать текущее состояние защиты Windows"/>
+                        </Grid>
+                        <TextBlock x:Name="ProtectionReport" Grid.Row="3" Grid.ColumnSpan="2" Style="{StaticResource Caption}"
                                    TextWrapping="Wrap" Margin="{StaticResource Gap.Subtitle}" Visibility="Collapsed"/>
-                        <TextBlock x:Name="ProtectionExportReport" Grid.Row="3" Grid.ColumnSpan="2" Style="{StaticResource Caption}"
+                        <TextBlock x:Name="ProtectionExportReport" Grid.Row="4" Grid.ColumnSpan="2" Style="{StaticResource Caption}"
                                    TextWrapping="Wrap" Margin="{StaticResource Gap.Subtitle}" Visibility="Collapsed"/>
                         <Popup x:Name="IconPopup" PlacementTarget="{Binding ElementName=IconButton}" Placement="Top"
                                StaysOpen="False" AllowsTransparency="True" PopupAnimation="Fade" VerticalOffset="-8">

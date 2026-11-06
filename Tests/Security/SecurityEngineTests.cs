@@ -1,15 +1,18 @@
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
+using System.Diagnostics;
 using System.Linq;
 using System.Reflection;
 using System.Text;
+using System.Threading.Tasks;
+using JustEnoughTools.Platform;
 using JustEnoughTools.Security;
 
 namespace JustEnoughTools.Tests
 {
-    // Only fake backends/providers are exercised here. These tests never call Run(), start
-    // PowerShell, inspect protection, elevate, or write a Windows setting.
+    // Only fake backends/providers are exercised here. The RTP script tests run
+    // with in-memory provider functions in place of every Windows security module.
     public static class SecurityEngineTests
     {
         private sealed class FakeBackend : ISecurityBackend
@@ -198,13 +201,158 @@ namespace JustEnoughTools.Tests
                 "An already-audit result failed to preserve the no-write explanation."); checks++;
 
             string probeScript = (string)typeof(WindowsSecurityBackend).GetField("SnapshotScript", BindingFlags.NonPublic | BindingFlags.Static).GetRawConstantValue();
+            const string setterMetadataRead = @"Microsoft.PowerShell.Core\Get-Command Defender\Set-MpPreference -ErrorAction Stop";
             Require(probeScript.Contains("$env:PSModulePath = [IO.Path]::Combine($PSHOME, 'Modules')") &&
                 probeScript.Contains("Microsoft.PowerShell.Core\\Import-Module") && probeScript.Contains("Defender\\Get-MpPreference") &&
-                probeScript.IndexOf("Set-MpPreference", StringComparison.OrdinalIgnoreCase) < 0 &&
+                probeScript.Contains(setterMetadataRead) && probeScript.Replace(setterMetadataRead, "").IndexOf("Set-MpPreference", StringComparison.OrdinalIgnoreCase) < 0 &&
                 probeScript.IndexOf("Set-NetFirewallProfile", StringComparison.OrdinalIgnoreCase) < 0 &&
                 probeScript.IndexOf("Disable-ScheduledTask", StringComparison.OrdinalIgnoreCase) < 0,
                 "The terminable read-only probe lost trusted module isolation or contains a mutating command."); checks++;
+            checks += CheckRealtimeProtection();
             return checks;
+        }
+
+        private static int CheckRealtimeProtection()
+        {
+            const string active = "[pscustomobject]@{RealTimeProtectionEnabled=$true;IsTamperProtected=$false;SmartAppControlState='Off'}";
+            const string protectedActive = "[pscustomobject]@{RealTimeProtectionEnabled=$true;IsTamperProtected=$true;SmartAppControlState='Off'}";
+            const string protectedOff = "[pscustomobject]@{RealTimeProtectionEnabled=$false;IsTamperProtected=$true;SmartAppControlState='Off'}";
+            const string unknownRuntime = "[pscustomobject]@{RealTimeProtectionEnabled='False';IsTamperProtected=$true;SmartAppControlState='Off'}";
+            const string unknownTamper = "[pscustomobject]@{RealTimeProtectionEnabled=$true;IsTamperProtected='True';SmartAppControlState='Off'}";
+            const string unknownRead = "throw [ComponentModel.Win32Exception]::new(5, 'Fake runtime read denied')";
+            const string deniedWrite = "throw [ComponentModel.Win32Exception]::new(5, 'Fake RTP write denied')";
+            const string desiredPref = "[pscustomobject]@{DisableRealtimeMonitoring=$true;MAPSReporting=0;SubmitSamplesConsent=2;PUAProtection=2;EnableControlledFolderAccess=0}";
+            const string retainedPref = "[pscustomobject]@{DisableRealtimeMonitoring=$false}";
+            const string deniedPref = "throw [ComponentModel.Win32Exception]::new(5, 'Fake preference read denied')";
+            SecurityAction rtp = SecurityEngine.Catalogue.Single(action => action.Id == SecurityEngine.RealtimeActionId);
+            int checks = 0;
+
+            var blockedBackend = FakeRealtimeProvider(protectedActive, protectedActive, desiredPref, "", true, false);
+            SecuritySnapshot blocked = blockedBackend.Inspect();
+            Require(!blocked.HasChanges && !blocked.RequiresElevation && !blocked.HasUnknown && !blocked.IsComplete &&
+                blocked.Actions.Single(item => item.Id == rtp.Id).State == ActionStateKind.Blocked &&
+                blocked.ToReport().Results.Single(item => item.Id == rtp.Id).Outcome == ActionOutcome.TamperProtected,
+                "Confirmed active RTP and Tamper Protection must report a blocker without requesting UAC or hiding it."); checks++;
+            SecurityReport blockedReport = blocked.ToReport();
+            Require(!blockedReport.Succeeded && blockedReport.FormatProblems(includeTamperInstructions: true).Contains(SecurityEngine.TamperProtectionInstructions) &&
+                !blockedReport.FormatProblems().Contains(SecurityEngine.TamperProtectionInstructions),
+                "The Runner problem report must include instructions, while the main window owns its own help panel."); checks++;
+            blocked.Actions.Single(item => item.Id == "firewall.public").State = ActionStateKind.NeedsChange;
+            var otherActions = new FakeBackend { SnapshotFactory = () => blocked };
+            SecurityReport partial = SecurityEngine.ExecuteCatalogue(otherActions);
+            Require(blocked.HasChanges && blocked.RequiresElevation && otherActions.Calls.SequenceEqual(new[] { "firewall.public" }) &&
+                partial.Results.Single(item => item.Id == rtp.Id).Outcome == ActionOutcome.TamperProtected,
+                "The RTP blocker must not block independent actions or be passed to a setter."); checks++;
+
+            foreach (var pair in new[] { Tuple.Create(protectedOff, ActionStateKind.AlreadyDesired),
+                Tuple.Create(unknownRuntime, ActionStateKind.Unknown), Tuple.Create(unknownTamper, ActionStateKind.Unknown),
+                Tuple.Create(active, ActionStateKind.NeedsChange) })
+            {
+                SecuritySnapshot state = FakeRealtimeProvider(pair.Item1, pair.Item1, desiredPref, "", true, false).Inspect();
+                Require(state.Actions.Single(item => item.Id == rtp.Id).State == pair.Item2 &&
+                    state.RequiresElevation == (pair.Item2 == ActionStateKind.NeedsChange),
+                    "The read-only RTP probe conflated active, already off, or malformed provider values."); checks++;
+            }
+
+            foreach (var pair in new[] { Tuple.Create(protectedOff, ActionOutcome.AlreadySet),
+                Tuple.Create(protectedActive, ActionOutcome.TamperProtected), Tuple.Create(unknownRuntime, ActionOutcome.Unverified),
+                Tuple.Create(unknownTamper, ActionOutcome.Unverified) })
+            {
+                ActionResult result = FakeRealtimeProvider(pair.Item1, pair.Item1, deniedPref, deniedWrite, false, false).Execute(rtp);
+                Require(result.Outcome == pair.Item2, "The worker did not recheck actual RTP and Tamper Protection before the setter."); checks++;
+            }
+
+            SecuritySnapshot unsupported = FakeRealtimeProvider(active, active, desiredPref, "", true, false, false).Inspect();
+            Require(unsupported.Actions.Single(item => item.Id == rtp.Id).State == ActionStateKind.Unavailable &&
+                !unsupported.HasChanges && !unsupported.RequiresElevation,
+                "An unsupported RTP setter parameter was still an elevation reason."); checks++;
+            ActionResult unavailable = FakeRealtimeProvider(active, active, desiredPref, "", false, false, false).Execute(rtp);
+            Require(unavailable.Outcome == ActionOutcome.Unavailable, "The worker ignored a missing RTP setter parameter."); checks++;
+
+            ActionResult mismatch = FakeRealtimeProvider(active, protectedOff, retainedPref, "", false, true).Execute(rtp);
+            Require(mismatch.Outcome == ActionOutcome.Applied && mismatch.After.Contains("DisableRealtimeMonitoring=False") &&
+                mismatch.After.Contains("RealTimeProtectionEnabled=False"), "A preference mismatch prevented final actual RTP verification."); checks++;
+
+            ActionResult accepted = FakeRealtimeProvider(active, active, desiredPref, "", false, true).Execute(rtp);
+            Require(accepted.Outcome == ActionOutcome.Unverified && accepted.After.Contains("DisableRealtimeMonitoring=True") &&
+                accepted.After.Contains("RealTimeProtectionEnabled=True"), "An accepted preference write was treated as proof of RTP being off."); checks++;
+
+            ActionResult race = FakeRealtimeProvider(active, protectedActive, retainedPref, "", false, true).Execute(rtp);
+            Require(race.Outcome == ActionOutcome.TamperProtected && race.After.Contains("RealTimeProtectionEnabled=True"),
+                "A confirmed Tamper change after the attempt lost its typed blocker or runtime evidence."); checks++;
+
+            ActionResult errors = FakeRealtimeProvider(active, protectedOff, deniedPref, deniedWrite, false, true).Execute(rtp);
+            Require(errors.Outcome == ActionOutcome.Applied && errors.After.Contains("RealTimeProtectionEnabled=False") &&
+                errors.Reason.Contains("Чтение предпочтения: Fake preference read denied (Win32 5)") &&
+                errors.Reason.Contains("Запись предпочтения: Fake RTP write denied (Win32 5)"),
+                "Setter/readback errors hid independently confirmed runtime Off or lost native diagnostics."); checks++;
+
+            ActionResult unreadable = FakeRealtimeProvider(active, unknownRead, desiredPref, "", false, true).Execute(rtp);
+            Require(unreadable.Outcome == ActionOutcome.Unverified && unreadable.After.Contains("RealTimeProtectionEnabled=Unknown") &&
+                unreadable.Reason.Contains("Чтение фактического состояния RTP: Fake runtime read denied (Win32 5)"),
+                "An unreadable final RTP state was treated as success or lost the native error."); checks++;
+            return checks;
+        }
+
+        private static WindowsSecurityBackend FakeRealtimeProvider(string initial, string final, string preference, string setter,
+            bool expectReadOnly, bool expectSetter, bool supportsParameter = true)
+        {
+            const string marker = "TEST-RTP-SETTER";
+            string provider = @"
+$script:statusCalls = 0
+function Read-TestStatus {
+    [CmdletBinding()] param()
+    $script:statusCalls++
+    if ($script:statusCalls -eq 1) { " + initial + @"; return }
+    " + final + @"
+}
+function Read-TestPreference { [CmdletBinding()] param(); " + preference + @" }
+function Set-TestPreference {
+    [CmdletBinding()] param([bool]$" + (supportsParameter ? "DisableRealtimeMonitoring" : "OtherPreference") + @")
+    [Console]::Error.Write('" + marker + @"')
+    if (-not $DisableRealtimeMonitoring) { throw 'Unexpected fake setter value.' }
+    " + setter + @"
+}
+function Read-TestScheduledTask {
+    [CmdletBinding()] param([string]$TaskPath, [string]$TaskName)
+    [pscustomobject]@{Settings=[pscustomobject]@{Enabled=$false}}
+}
+function Read-TestFirewallProfile {
+    [CmdletBinding()] param([string]$PolicyStore)
+    foreach ($name in @('Domain','Private','Public')) { [pscustomobject]@{Name=$name;Enabled=0} }
+}
+";
+            return new WindowsSecurityBackend((original, readOnly) =>
+            {
+                Require(readOnly == expectReadOnly, "The backend selected the wrong read-only/worker path.");
+                string script = provider + original.Replace("Import-SystemModule 'Defender'", "$null = 0")
+                    .Replace("Import-SystemModule 'ScheduledTasks'", "$null = 0")
+                    .Replace("Import-SystemModule 'NetSecurity'", "$null = 0")
+                    .Replace(@"Defender\Get-MpComputerStatus", "Read-TestStatus")
+                    .Replace(@"Defender\Get-MpPreference", "Read-TestPreference")
+                    .Replace(@"Defender\Set-MpPreference", "Set-TestPreference")
+                    .Replace(@"ScheduledTasks\Get-ScheduledTask", "Read-TestScheduledTask")
+                    .Replace(@"'\Microsoft\Windows\Windows Defender\'", "'TEST-SCHEDULED-TASK'")
+                    .Replace(@"NetSecurity\Get-NetFirewallProfile", "Read-TestFirewallProfile")
+                    .Replace("Start-Sleep -Milliseconds 300", "$null = 0");
+                Require(!new[] { @"Defender\", @"ScheduledTasks\", @"NetSecurity\", "'Defender'", "'ScheduledTasks'", "'NetSecurity'",
+                    "Get-MpComputerStatus", "Get-MpPreference", "Set-MpPreference", "Disable-ScheduledTask", "Set-NetFirewallProfile" }
+                    .Any(script.Contains), "A production provider reached the fake PowerShell test.");
+                using (Process child = WindowsPowerShell.Start(script, null, true))
+                {
+                    try
+                    {
+                        Task<string> output = child.StandardOutput.ReadToEndAsync();
+                        Task<string> error = child.StandardError.ReadToEndAsync();
+                        Require(WindowsPowerShell.SendScriptAsync(child, script).Wait(15000) && child.WaitForExit(15000),
+                            "The harmless fake provider child timed out.");
+                        string stderr = error.GetAwaiter().GetResult();
+                        Require(child.ExitCode == 0 && stderr == (expectSetter ? marker : ""), "Unexpected fake PowerShell outcome: " + stderr);
+                        return new WindowsSecurityBackend.ProcessOutput { ExitCode = child.ExitCode, Output = output.GetAwaiter().GetResult(), Errors = "" };
+                    }
+                    finally { if (!child.HasExited) { child.Kill(); child.WaitForExit(); } }
+                }
+            }, "Core", 0);
         }
 
         private static SecuritySnapshot Snapshot(ActionStateKind state)

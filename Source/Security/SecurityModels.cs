@@ -12,7 +12,8 @@ namespace JustEnoughTools.Security
         [EnumMember] AlreadyDesired,
         [EnumMember] NeedsChange,
         [EnumMember] Unavailable,
-        [EnumMember] Unknown
+        [EnumMember] Unknown,
+        [EnumMember] Blocked
     }
 
     [DataContract]
@@ -33,7 +34,10 @@ namespace JustEnoughTools.Security
         public bool HasChanges { get { return IsWellFormed() && Actions.Any(item => item.State == ActionStateKind.NeedsChange); } }
         public bool HasUnknown { get { return !IsWellFormed() || Actions.Any(item => item.State == ActionStateKind.Unknown); } }
         public bool RequiresElevation { get { return IsWellFormed() && Actions.Any(item => item.State == ActionStateKind.NeedsChange && item.RequiresElevation); } }
-        public bool IsComplete { get { return IsWellFormed() && !HasChanges && !HasUnknown; } }
+        public bool IsComplete { get { return IsWellFormed() && Actions.All(item =>
+            item.State == ActionStateKind.AlreadyDesired || item.State == ActionStateKind.Unavailable); } }
+        internal ActionState RealtimeProtection { get { return IsWellFormed()
+            ? Actions.Find(item => item.Id == SecurityEngine.RealtimeActionId) : null; } }
 
         private bool IsWellFormed()
         {
@@ -62,7 +66,8 @@ namespace JustEnoughTools.Security
                     Outcome = ActionOutcome.Unverified, Reason = "Отсутствует состояние действия." } : new ActionResult
                 {
                     Id = item.Id, Title = item.Title,
-                    Outcome = item.State == ActionStateKind.AlreadyDesired ? ActionOutcome.AlreadySet : ActionOutcome.Unverified,
+                    Outcome = item.State == ActionStateKind.AlreadyDesired ? ActionOutcome.AlreadySet :
+                        item.State == ActionStateKind.Blocked ? SecurityEngine.BlockedOutcome(item.Id) : ActionOutcome.Unverified,
                     Reason = item.Reason ?? "Состояние действия не подтверждено."
                 });
             }
@@ -81,7 +86,8 @@ namespace JustEnoughTools.Security
         [EnumMember] Blocked,
         [EnumMember] Unavailable,
         [EnumMember] Unverified,
-        [EnumMember] Failed
+        [EnumMember] Failed,
+        [EnumMember] TamperProtected
     }
 
     [DataContract]
@@ -109,7 +115,10 @@ namespace JustEnoughTools.Security
             }
         }
 
-        public string FormatProblems()
+        internal bool RealtimeBlockedByTamper { get { return Results != null && Results.Any(result => result != null &&
+            result.Id == SecurityEngine.RealtimeActionId && result.Outcome == ActionOutcome.TamperProtected); } }
+
+        public string FormatProblems(bool includeTamperInstructions = false)
         {
             if (Results == null || Results.Count == 0) return "Рабочий процесс не вернул результатов. Изменения не подтверждены.";
             int confirmed = Results.Count(item => item != null &&
@@ -119,10 +128,13 @@ namespace JustEnoughTools.Security
             foreach (ActionResult result in Results)
             {
                 if (result == null) { text.AppendLine("• Отсутствует результат действия."); continue; }
-                if (result.Outcome == ActionOutcome.Applied || result.Outcome == ActionOutcome.AlreadySet) continue;
+                if ((result.Outcome == ActionOutcome.Applied || result.Outcome == ActionOutcome.AlreadySet) &&
+                    (result.Id != SecurityEngine.RealtimeActionId || String.IsNullOrWhiteSpace(result.Reason))) continue;
                 text.Append("• ").Append(result.Title ?? result.Id ?? "Действие").Append(": ")
                     .AppendLine(String.IsNullOrWhiteSpace(result.Reason) ? "Результат не подтверждён." : result.Reason);
             }
+            if (includeTamperInstructions && RealtimeBlockedByTamper)
+                text.AppendLine().AppendLine(SecurityEngine.TamperProtectionInstructions);
             return text.ToString().TrimEnd();
         }
     }

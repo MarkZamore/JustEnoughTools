@@ -54,11 +54,11 @@ namespace JustEnoughTools.Security
         {
             switch (action.Id)
             {
-                case "defender.realtime": return Preference(action, "DisableRealtimeMonitoring", "$true", "True", true);
-                case "defender.cloud": return Preference(action, "MAPSReporting", "0", "0", false);
-                case "defender.samples": return Preference(action, "SubmitSamplesConsent", "2", "2", false);
-                case "defender.pua": return InterpretPuaResult(Preference(action, "PUAProtection", "0", "0", false));
-                case "defender.cfa": return Preference(action, "EnableControlledFolderAccess", "0", "0", false);
+                case "defender.realtime": return RunPowerShell(action, RealtimePreferenceScript);
+                case "defender.cloud": return Preference(action, "MAPSReporting", "0", "0");
+                case "defender.samples": return Preference(action, "SubmitSamplesConsent", "2", "2");
+                case "defender.pua": return InterpretPuaResult(Preference(action, "PUAProtection", "0", "0"));
+                case "defender.cfa": return Preference(action, "EnableControlledFolderAccess", "0", "0");
                 case "defender.scheduled": return RunPowerShell(action, ScheduledScan);
                 case "firewall.domain": return Firewall(action, "Domain");
                 case "firewall.private": return Firewall(action, "Private");
@@ -200,12 +200,83 @@ namespace JustEnoughTools.Security
             return new ActionState { Id = action.Id, Title = action.Title, State = state, Reason = reason, RequiresElevation = elevation };
         }
 
-        private ActionResult Preference(SecurityAction action, string property, string value, string target, bool realtime)
+        private const string RealtimeBlockedReason = "Защита в реальном времени включена. Windows блокирует её изменение при включённой защите от изменений.";
+        private const string RealtimeTamperUnknownReason = "Защита в реальном времени включена, но состояние защиты от изменений не подтверждено. Запись не выполнялась.";
+        private const string RealtimeSetterUnavailableReason = "Провайдер Defender не поддерживает изменение защиты в реальном времени.";
+
+        private const string RealtimeProbeFunctions = @"
+function Get-RealtimeState($status) {
+    if ($null -eq $status -or $status.RealTimeProtectionEnabled -isnot [bool]) { return 'Unknown' }
+    if (-not $status.RealTimeProtectionEnabled) { return 'Off' }
+    if ($status.IsTamperProtected -is [bool] -and $status.IsTamperProtected) { return 'Blocked' }
+    return 'On'
+}
+function Test-RealtimeSetter {
+    $command = Microsoft.PowerShell.Core\Get-Command Defender\Set-MpPreference -ErrorAction Stop
+    return $command.Parameters.ContainsKey('DisableRealtimeMonitoring')
+}
+";
+
+        private const string RealtimePreferenceScript = RealtimeProbeFunctions + @"
+$initial = Defender\Get-MpComputerStatus -ErrorAction Stop
+switch (Get-RealtimeState $initial) {
+    'Off' {
+        $r.Before = $r.After = 'RealTimeProtectionEnabled=False'
+        Finish 1 'Защита в реальном времени уже выключена. Запись не выполнялась.'
+    }
+    'Blocked' {
+        $r.Before = $r.After = 'RealTimeProtectionEnabled=True; IsTamperProtected=True'
+        Finish 6 '" + RealtimeBlockedReason + @"'
+    }
+    'Unknown' { Finish 4 'Не удалось подтвердить включённое состояние RTP. Запись не выполнялась.' }
+}
+$r.Before = 'RealTimeProtectionEnabled=True'
+if ($initial.IsTamperProtected -isnot [bool]) { Finish 4 '" + RealtimeTamperUnknownReason + @"' }
+try { $canSet = Test-RealtimeSetter }
+catch { Finish (Get-ProviderOutcome $_) ('Проверка доступности настройки RTP: ' + (Describe-ProviderError $_) + ' Запись не выполнялась.') }
+if (-not $canSet) { Finish 3 '" + RealtimeSetterUnavailableReason + @"' }
+
+$writeError = $null
+try { Defender\Set-MpPreference -DisableRealtimeMonitoring $true -ErrorAction Stop | Out-Null }
+catch { $writeError = $_ }
+
+$preference = 'Unknown'
+$preferenceError = ''
+try {
+    $pref = Defender\Get-MpPreference -ErrorAction Stop
+    if ($pref.DisableRealtimeMonitoring -is [bool]) { $preference = [string]$pref.DisableRealtimeMonitoring }
+} catch { $preferenceError = ' Чтение предпочтения: ' + (Describe-ProviderError $_) }
+
+$runtimeState = 'Unknown'
+$runtimeError = ''
+for ($attempt = 0; $attempt -le 5; $attempt++) {
+    if ($attempt -gt 0) { Start-Sleep -Milliseconds 300 }
+    try {
+        $runtimeState = Get-RealtimeState (Defender\Get-MpComputerStatus -ErrorAction Stop)
+        $runtimeError = ''
+        if ($runtimeState -eq 'Off' -or $runtimeState -eq 'Blocked') { break }
+    } catch {
+        $runtimeState = 'Unknown'
+        $runtimeError = ' Чтение фактического состояния RTP: ' + (Describe-ProviderError $_)
+    }
+}
+$runtimeValue = if ($runtimeState -eq 'Off') { 'False' } elseif ($runtimeState -eq 'Unknown') { 'Unknown' } else { 'True' }
+$r.After = 'DisableRealtimeMonitoring=' + $preference + '; RealTimeProtectionEnabled=' + $runtimeValue
+$detail = ' Прочитанное предпочтение DisableRealtimeMonitoring=' + $preference + '.' + $preferenceError + $runtimeError
+if ($null -ne $writeError) { $detail += ' Запись предпочтения: ' + (Describe-ProviderError $writeError) }
+if ($runtimeState -eq 'Off') { Finish 0 ('Защита в реальном времени сейчас выключена.' + $detail) }
+if ($runtimeState -eq 'Blocked') { Finish 6 ('" + RealtimeBlockedReason + @"' + $detail) }
+$reason = if ($runtimeState -eq 'On') { 'Защита в реальном времени осталась включена.' } else { 'Фактическое состояние защиты в реальном времени не подтверждено.' }
+if ($null -ne $writeError) { Finish (Get-ProviderOutcome $writeError) ($reason + $detail) }
+Finish 4 ($reason + $detail)
+";
+
+        private ActionResult Preference(SecurityAction action, string property, string value, string target)
         {
-            return RunPowerShell(action, BuildPreferenceScript(property, value, target, realtime));
+            return RunPowerShell(action, BuildPreferenceScript(property, value, target));
         }
 
-        internal static string BuildPreferenceScript(string property, string value, string target, bool realtime)
+        private static string BuildPreferenceScript(string property, string value, string target)
         {
             string script = @"
 $property = 'PROPERTY'
@@ -229,28 +300,10 @@ if (-not $unchanged) {
 }
 $r.After = PreferenceValue (Defender\Get-MpPreference -ErrorAction Stop)
 if ($r.After -ne $target) { Finish 4 ('Windows не подтвердила значение ' + $property + ': ожидалось ' + $target + ', получено ' + $r.After + '.' + (TamperHint)) }
-RUNTIME
 if ($unchanged) { Finish 1 'Запрошенное состояние уже установлено; повторное чтение выполнено.' }
 Finish 0 'Значение подтверждено повторным чтением. Windows может позднее изменить его.'
 ";
-            string runtime = realtime ? @"
-$runtime = Defender\Get-MpComputerStatus -ErrorAction Stop
-for ($attempt = 0; $attempt -lt 5 -and $runtime.RealTimeProtectionEnabled -ne $false; $attempt++) {
-    Start-Sleep -Milliseconds 300
-    $runtime = Defender\Get-MpComputerStatus -ErrorAction Stop
-}
-if ($runtime.RealTimeProtectionEnabled -ne $false) {
-    $r.After += '; RealTimeProtectionEnabled=' + [string]$runtime.RealTimeProtectionEnabled
-    Finish 4 ('Предпочтение сохранено, но выключение защиты в реальном времени не подтверждено фактическим статусом.' + (TamperHint))
-}
-$r.After += '; RealTimeProtectionEnabled=False'
-" : "";
-            string precheck = realtime ? @"
-$initialRuntime = Defender\Get-MpComputerStatus -ErrorAction Stop
-if ($initialRuntime.RealTimeProtectionEnabled -eq $false) { Finish 1 'Фактическая защита RTP уже выключена; предпочтение не изменялось.' }
-if ($initialRuntime.RealTimeProtectionEnabled -ne $true) { Finish 4 'Не удалось подтвердить включённое состояние RTP; изменение не выполнялось.' }
-$unchanged = $false
-" : property == "SubmitSamplesConsent" ? @"
+            string precheck = property == "SubmitSamplesConsent" ? @"
 if ([int]$pref.SubmitSamplesConsent -eq 0) { Finish 1 'Автоматическая отправка уже выключена (AlwaysPrompt); ручное подтверждение не изменялось.' }
 " : property == "PUAProtection" ? @"
 if ([int]$pref.PUAProtection -eq 2) {
@@ -260,7 +313,7 @@ if ([int]$pref.PUAProtection -eq 2) {
 if ([int]$pref.PUAProtection -ne 0 -and [int]$pref.PUAProtection -ne 1) { Finish 4 'Неизвестное значение PUAProtection; изменение не выполнялось.' }
 " : "";
             return script.Replace("PROPERTY", property).Replace("TARGET", target)
-                .Replace("VALUE", value).Replace("PRECHECK", precheck).Replace("RUNTIME", runtime);
+                .Replace("VALUE", value).Replace("PRECHECK", precheck);
         }
 
         private ActionResult Firewall(SecurityAction action, string profile)
@@ -407,6 +460,16 @@ function Describe-ProviderError($record) {
     }
     return $record.Exception.Message + ' (' + $code + ').'
 }
+function Get-ProviderOutcome($record) {
+    if ($record.CategoryInfo.Category -eq 'PermissionDenied' -or $record.CategoryInfo.Category -eq 'SecurityError') { return 2 }
+    $error = $record.Exception
+    while ($null -ne $error) {
+        if ($error -is [UnauthorizedAccessException] -or ($error -is [ComponentModel.Win32Exception] -and $error.NativeErrorCode -eq 5)) { return 2 }
+        $error = $error.InnerException
+    }
+    if ($record.CategoryInfo.Category -eq 'ObjectNotFound' -or $record.CategoryInfo.Category -eq 'NotImplemented') { return 3 }
+    return 5
+}
 ";
 
         private const string Preamble = ProviderErrorFunction + @"
@@ -430,17 +493,17 @@ function Finish([int]$outcome, [string]$reason) {
 function TamperHint {
     try {
         $s = Defender\Get-MpComputerStatus -ErrorAction Stop
-        if ($s.IsTamperProtected -eq $true) { return ' Защита от изменений включена; приложение её не отключает.' }
-        if ($s.IsTamperProtected -eq $false) { return ' Защита от изменений сообщает состояние Off.' }
+        if ($s.IsTamperProtected -is [bool]) {
+            if ($s.IsTamperProtected) { return ' Защита от изменений включена; приложение её не отключает.' }
+            return ' Защита от изменений сообщает состояние Off.'
+        }
     } catch { }
     return ' Состояние защиты от изменений неизвестно.'
 }
 try {
 BODY
 } catch {
-    $status = 5
-    if ($_.CategoryInfo.Category -eq 'PermissionDenied' -or $_.CategoryInfo.Category -eq 'SecurityError' -or $_.Exception -is [UnauthorizedAccessException]) { $status = 2 }
-    if ($_.CategoryInfo.Category -eq 'ObjectNotFound' -or $_.CategoryInfo.Category -eq 'NotImplemented') { $status = 3 }
+    $status = Get-ProviderOutcome $_
     $reason = 'Применение настройки: ' + (Describe-ProviderError $_)
     if ($r.Id.StartsWith('defender.')) { $reason += TamperHint }
     Finish $status $reason
@@ -558,7 +621,7 @@ Finish 0 'Штатная задача выключена; это относит�
 
         // One read-only PowerShell process gathers the provider values shared by
         // all actions. No setter, registry write, elevation or UI is used here.
-        private const string SnapshotScript = ProviderErrorFunction + @"
+        private const string SnapshotScript = ProviderErrorFunction + RealtimeProbeFunctions + @"
 $ErrorActionPreference = 'Stop'
 $WarningPreference = 'SilentlyContinue'
 $ProgressPreference = 'SilentlyContinue'
@@ -579,15 +642,7 @@ $prefError = ''
 $statusError = ''
 try { Import-SystemModule 'Defender'; $pref = Defender\Get-MpPreference -ErrorAction Stop } catch { $prefError = Describe-ProviderError $_ }
 try { Import-SystemModule 'Defender'; $status = Defender\Get-MpComputerStatus -ErrorAction Stop } catch { $statusError = Describe-ProviderError $_ }
-function AddPreference([string]$id, [string]$name, [string]$target, [bool]$rt = $false) {
-    if ($rt) {
-        if ($null -eq $status -or $null -eq $status.PSObject.Properties['RealTimeProtectionEnabled']) {
-            AddState $id 3 ('Фактическое состояние RTP не прочитано: ' + $statusError); return
-        }
-        if ($status.RealTimeProtectionEnabled -eq $false) { AddState $id 0 'Фактическая защита RTP уже выключена; изменение предпочтения не требуется.'; return }
-        if ($status.RealTimeProtectionEnabled -eq $true) { AddState $id 1 'Фактическая защита RTP включена.'; return }
-        AddState $id 3 'Провайдер не вернул однозначное фактическое состояние RTP.'; return
-    }
+function AddPreference([string]$id, [string]$name, [string]$target) {
     if ($null -eq $pref) { AddState $id 3 ('Не удалось прочитать предпочтения Defender: ' + $prefError); return }
     if ($null -eq $pref.PSObject.Properties[$name]) { AddState $id 2 ('Параметр ' + $name + ' не поддерживается провайдером.'); return }
     try {
@@ -599,7 +654,24 @@ function AddPreference([string]$id, [string]$name, [string]$target, [bool]$rt = 
         AddState $id 0 ($name + '=' + $value + '; предпочтение уже настроено.')
     } catch { AddState $id 3 (Describe-ProviderError $_) }
 }
-AddPreference 'defender.realtime' 'DisableRealtimeMonitoring' 'True' $true
+switch (Get-RealtimeState $status) {
+    'Off' { AddState 'defender.realtime' 0 'Защита в реальном времени уже выключена. Запись не требуется.' $false }
+    'Blocked' { AddState 'defender.realtime' 4 '" + RealtimeBlockedReason + @"' $false }
+    'On' {
+        if ($status.IsTamperProtected -isnot [bool]) {
+            AddState 'defender.realtime' 3 '" + RealtimeTamperUnknownReason + @"' $false
+        } else {
+            try {
+                if (Test-RealtimeSetter) { AddState 'defender.realtime' 1 'Защита в реальном времени включена.' }
+                else { AddState 'defender.realtime' 2 '" + RealtimeSetterUnavailableReason + @"' $false }
+            } catch {
+                $state = if ((Get-ProviderOutcome $_) -eq 3) { 2 } else { 3 }
+                AddState 'defender.realtime' $state ('Проверка доступности настройки RTP: ' + (Describe-ProviderError $_)) $false
+            }
+        }
+    }
+    default { AddState 'defender.realtime' 3 ('Фактическое состояние RTP не подтверждено. ' + $statusError) $false }
+}
 AddPreference 'defender.cloud' 'MAPSReporting' '0'
 AddPreference 'defender.samples' 'SubmitSamplesConsent' '2'
 AddPreference 'defender.cfa' 'EnableControlledFolderAccess' '0'
@@ -631,7 +703,7 @@ foreach ($name in @('Domain','Private','Public')) {
         AddState $id 3 ('Неизвестное эффективное значение Enabled=' + $effective + '.')
     } catch { AddState $id 3 (Describe-ProviderError $_) }
 }
-if ($null -ne $status -and $null -ne $status.PSObject.Properties['IsTamperProtected'] -and $status.IsTamperProtected -eq $false) {
+if ($null -ne $status -and $status.IsTamperProtected -is [bool] -and -not $status.IsTamperProtected) {
     AddState 'defender.tamper' 0 'Провайдер сообщает Off; защита от изменений не изменяется.' $false
 } else {
     AddState 'defender.tamper' 2 'Программное отключение защиты от изменений для локального приложения не подтверждено; переключатель не автоматизируется.' $false

@@ -89,7 +89,7 @@ namespace JustEnoughTools.Runner
         {
             if (report == null) throw new InvalidOperationException("Не получен результат выполнения.");
             if (report.Succeeded) return 0;
-            ShowProblems(report.FormatProblems());
+            ShowProblems(report.FormatProblems(includeTamperInstructions: true));
             return 2;
         }
 

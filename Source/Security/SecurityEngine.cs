@@ -26,9 +26,14 @@ namespace JustEnoughTools.Security
     public static class SecurityEngine
     {
         internal const string MutexName = @"Global\JustEnoughTools.SecurityActions.v1";
+        internal const string RealtimeActionId = "defender.realtime";
+        internal const string TamperProtectionInstructions =
+            "Вручную откройте «Безопасность Windows» → «Защита от вирусов и угроз» → «Управление настройками». " +
+            "Выключите переключатель «Защита от подделки» (Tamper Protection), если он доступен. " +
+            "Если параметром управляет организация, обратитесь к её администратору.";
         internal static readonly ReadOnlyCollection<SecurityAction> Catalogue = Array.AsReadOnly(new[]
         {
-            new SecurityAction("defender.realtime", "Защита Defender в реальном времени"),
+            new SecurityAction(RealtimeActionId, "Защита Defender в реальном времени"),
             new SecurityAction("defender.cloud", "Облачная защита Defender"),
             new SecurityAction("defender.samples", "Автоматическая отправка образцов"),
             new SecurityAction("defender.pua", "Блокировка нежелательных приложений Defender"),
@@ -123,6 +128,11 @@ namespace JustEnoughTools.Security
             foreach (SecurityAction action in Catalogue)
             {
                 ActionState state = snapshot.Actions == null ? null : snapshot.Actions.Find(item => item != null && item.Id == action.Id);
+                if (state != null && state.State == ActionStateKind.Blocked)
+                {
+                    report.Results.Add(Result(action, BlockedOutcome(action.Id), state.Reason));
+                    continue;
+                }
                 if (state != null && state.State == ActionStateKind.Unavailable)
                 {
                     report.Results.Add(Result(action, ActionOutcome.Unavailable, state.Reason));
@@ -156,6 +166,11 @@ namespace JustEnoughTools.Security
             }
             if (report.Results.Count == 0) return snapshot.ToReport();
             return report;
+        }
+
+        internal static ActionOutcome BlockedOutcome(string id)
+        {
+            return id == RealtimeActionId ? ActionOutcome.TamperProtected : ActionOutcome.Blocked;
         }
 
         internal static ActionResult Result(SecurityAction action, ActionOutcome outcome, string reason,

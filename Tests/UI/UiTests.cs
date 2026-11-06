@@ -297,7 +297,7 @@ namespace JustEnoughTools.Tests
                     State = action.Id == "defender.realtime" ? ActionStateKind.NeedsChange : ActionStateKind.AlreadyDesired,
                     Reason = "Проверено тестовым адаптером." });
             bool prepared = true;
-            int installAttempts = 0, saves = 0, inspections = 0;
+            int installAttempts = 0, saves = 0, inspections = 0, securityRuns = 0;
             bool saveFails = true;
             bool inspectFails = false;
             var operations = new MainWindowOperations
@@ -319,7 +319,7 @@ namespace JustEnoughTools.Tests
                 }
             };
             var controller = new MainWindowController(1, applicationAssembly.Location,
-                () => securityAction(), () =>
+                () => { securityRuns++; return securityAction(); }, () =>
                 {
                     inspections++;
                     if (inspectFails) throw new UnauthorizedAccessException("Тестовый отказ проверки.");
@@ -336,7 +336,7 @@ namespace JustEnoughTools.Tests
                     "The main application must not construct modal information dialogs.");
                 passed++;
 
-                WaitTask((Task)Invoke(controller, "RefreshSecurityStateAsync"));
+                WaitTask((Task)Invoke(controller, "RefreshSecurityStateAsync", false));
                 Button configure = Find<Button>(window, "ConfigureSecurityButton");
                 Require(configure.IsEnabled && inspections == 1, "A fixed startup snapshot must enable a pending action without polling.");
                 configure.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
@@ -364,27 +364,90 @@ namespace JustEnoughTools.Tests
                 PumpUntil(() => configure.IsEnabled);
                 Require(Find<TextBlock>(window, "ProtectionReport").Text.Contains("отменён"), "Cancelled UAC must remain inside the protection card.");
                 var success = new SecurityReport();
-                success.Results.Add(new ActionResult { Id = "defender.realtime", Outcome = ActionOutcome.AlreadySet });
+                success.Results.Add(new ActionResult { Id = SecurityEngine.RealtimeActionId, Title = "Защита в реальном времени",
+                    Outcome = ActionOutcome.Applied, Reason = "Защита в реальном времени сейчас выключена." });
                 securityAction = () => Task.FromResult(success);
                 configure.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
                 PumpUntil(() => configure.IsEnabled);
-                Require(Find<TextBlock>(window, "ProtectionReport").Text.Contains("1 из 1"), "Successful security execution must show its summary inline.");
+                Require(Find<TextBlock>(window, "ProtectionReport").Text.Contains("1 из 1") &&
+                    Find<TextBlock>(window, "ProtectionReport").Text.Contains("сейчас выключена"),
+                    "Successful security execution must display the confirmed RTP state inline.");
                 passed += 2;
 
                 snapshot.Actions[0].State = ActionStateKind.Unknown;
                 snapshot.Actions[0].Reason = "Провайдер не подтвердил состояние.";
-                WaitTask((Task)Invoke(controller, "RefreshSecurityStateAsync"));
+                WaitTask((Task)Invoke(controller, "RefreshSecurityStateAsync", false));
                 Require(Find<TextBlock>(window, "ProtectionReport").Text.Contains("Провайдер не подтвердил") && configure.IsEnabled &&
                     Find<TextBlock>(window, "ProtectionDescription").Visibility == Visibility.Collapsed,
                     "An unknown initial state must expose its reason and allow rechecking without assuming an elevation requirement.");
                 inspectFails = true;
-                WaitTask((Task)Invoke(controller, "RefreshSecurityStateAsync"));
+                WaitTask((Task)Invoke(controller, "RefreshSecurityStateAsync", false));
                 Require(Find<TextBlock>(window, "ProtectionReport").Text.Contains("Тестовый отказ проверки") && configure.IsEnabled,
                     "A failed initial inspection must report its error inline without treating protection as disabled.");
                 inspectFails = false;
-                snapshot.Actions[0].State = ActionStateKind.NeedsChange;
-                WaitTask((Task)Invoke(controller, "RefreshSecurityStateAsync"));
                 passed += 2;
+
+                Grid tamperHelp = Find<Grid>(window, "ProtectionTamperHelp");
+                TextBlock tamperHint = Find<TextBlock>(window, "ProtectionTamperHint");
+                Button recheck = Find<Button>(window, "RefreshProtectionButton");
+                Require(tamperHelp.Visibility == Visibility.Collapsed, "Unknown RTP alone must not display Tamper Protection instructions.");
+                ActionState realtime = snapshot.Actions[0];
+                realtime.State = ActionStateKind.Blocked;
+                realtime.Reason = "Защита от изменений блокирует изменение RTP.";
+                WaitTask((Task)Invoke(controller, "RefreshSecurityStateAsync", false));
+                Require(tamperHelp.Visibility == Visibility.Visible && recheck.IsEnabled && !configure.IsEnabled &&
+                    (string)recheck.Content == "Проверить снова" && tamperHint.Text.Contains("Управление настройками") &&
+                    Find<TextBlock>(window, "ProtectionDescription").Visibility == Visibility.Collapsed,
+                    "A known Tamper blocker must expose manual instructions and read-only recheck, without enabling apply or an elevation hint.");
+                int readsBeforeRecheck = inspections;
+                int runsBeforeRecheck = securityRuns;
+                recheck.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                Require(!recheck.IsEnabled && !configure.IsEnabled && Find<TextBlock>(window, "ProtectionReport").Text.Contains("Проверяется"),
+                    "During recheck the protection card must prevent overlapping probes or writes.");
+                recheck.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                PumpUntil(() => recheck.IsEnabled);
+                Require(inspections == readsBeforeRecheck + 1 && securityRuns == runsBeforeRecheck && !configure.IsEnabled &&
+                    tamperHelp.Visibility == Visibility.Visible, "Recheck must only read once and keep the known blocker if it persists.");
+                inspectFails = true;
+                recheck.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                PumpUntil(() => recheck.IsEnabled);
+                Require(tamperHelp.Visibility == Visibility.Visible && !tamperHint.Text.Contains("блокирует") &&
+                    Find<TextBlock>(window, "ProtectionReport").Text.Contains("Тестовый отказ проверки"),
+                    "A failed recheck must permit retry without presenting a stale blocker as current.");
+                inspectFails = false;
+                realtime.State = ActionStateKind.NeedsChange;
+                realtime.RequiresElevation = true;
+                realtime.Reason = "Защита в реальном времени включена.";
+                recheck.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                PumpUntil(() => configure.IsEnabled);
+                Require(tamperHelp.Visibility == Visibility.Collapsed && securityRuns == runsBeforeRecheck &&
+                    Find<TextBlock>(window, "ProtectionDescription").Visibility == Visibility.Visible &&
+                    Find<TextBlock>(window, "ProtectionReport").Text.Contains("Нажмите «Отключить»") &&
+                    Find<TextBlock>(window, "ProtectionExportReport").Text.Contains("Тестовый отказ"),
+                    "After unblocking, recheck must expose a separate apply action and leave the export report intact.");
+                var workerBlocked = new SecurityReport();
+                workerBlocked.Results.Add(new ActionResult { Id = realtime.Id, Title = realtime.Title,
+                    Outcome = ActionOutcome.TamperProtected, Reason = "Блокировка появилась во время применения." });
+                securityAction = () =>
+                {
+                    realtime.State = ActionStateKind.Blocked;
+                    return Task.FromResult(workerBlocked);
+                };
+                configure.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                PumpUntil(() => recheck.IsEnabled);
+                Require(tamperHelp.Visibility == Visibility.Visible && !configure.IsEnabled &&
+                    Find<TextBlock>(window, "ProtectionReport").Text.Contains("Блокировка появилась"),
+                    "A blocker reported by the worker must show recheck alongside the action result.");
+                realtime.State = ActionStateKind.AlreadyDesired;
+                realtime.Reason = "Защита в реальном времени уже выключена.";
+                recheck.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                PumpUntil(() => recheck.IsEnabled);
+                Require(tamperHelp.Visibility == Visibility.Collapsed && !configure.IsEnabled &&
+                    Find<TextBlock>(window, "ProtectionReport").Text == realtime.Reason && securityRuns == runsBeforeRecheck + 1,
+                    "Recheck must show when RTP is already off without starting another write.");
+                realtime.State = ActionStateKind.NeedsChange;
+                WaitTask((Task)Invoke(controller, "RefreshSecurityStateAsync", false));
+                passed += 8;
 
                 Find<Button>(window, "ApplyTaskbarButton").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
                 Require(Find<TextBlock>(window, "TaskbarReport").Text == "Режим панели задач подтверждён.", "Taskbar success must be inline.");
@@ -428,6 +491,8 @@ namespace JustEnoughTools.Tests
                 var longText = new System.Text.StringBuilder("Подтверждено сейчас: 6 из 18.\n");
                 for (int index = 0; index < 18; index++)
                     longText.Append("\n• Параметр ").Append(index + 1).Append(": документированный программный способ недоступен; результат не подтверждён.");
+                realtime.State = ActionStateKind.Blocked;
+                WaitTask((Task)Invoke(controller, "RefreshSecurityStateAsync", false));
                 Invoke(controller, "SetReport", Find<TextBlock>(window, "ProtectionReport"), longText.ToString());
                 Invoke(controller, "SetUpdateReport", longText.ToString());
                 foreach (Size outerSize in new[] { new Size(820, 560), new Size(1100, 760) })
@@ -443,6 +508,10 @@ namespace JustEnoughTools.Tests
                     TextBlock report = Find<TextBlock>(window, "ProtectionReport");
                     Border card = Find<Border>(window, "ProtectionCard");
                     AssertInside(report, card, "The full wrapped protection report must remain inside its expanding card.");
+                    AssertInside(tamperHint, card, "The wrapped Tamper instructions must remain within the protection card.");
+                    AssertInside(recheck, card, "The recheck button must remain within the protection card.");
+                    Require(Bounds(tamperHint, card).Right <= Bounds(recheck, card).Left,
+                        "The instructions must wrap without overlapping their recheck button.");
                     foreach (double scale in new[] { 1.0, 1.25, 1.5, 1.75, 2.0 }) AssertScaledRendering(root, scale);
                     SaveReportPreview(window, root, outerSize);
                 }

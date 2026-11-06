@@ -56,6 +56,9 @@ namespace JustEnoughTools
         readonly Button updateButton;
         readonly TextBlock updateText;
         readonly TextBlock protectionDescription;
+        readonly Grid protectionTamperHelp;
+        readonly TextBlock protectionTamperHint;
+        readonly Button refreshProtection;
         readonly ProgressBar updateProgress;
         readonly MainWindowOperations operations;
         readonly TextBlock protectionReport, protectionExportReport, taskbarReport, taskbarExportReport, updateReport;
@@ -128,10 +131,14 @@ namespace JustEnoughTools
             updateButton = (Button)Window.FindName("UpdateButton");
             updateText = (TextBlock)Window.FindName("UpdateProgressText");
             protectionDescription = (TextBlock)Window.FindName("ProtectionDescription");
+            protectionTamperHelp = (Grid)Window.FindName("ProtectionTamperHelp");
+            protectionTamperHint = (TextBlock)Window.FindName("ProtectionTamperHint");
+            refreshProtection = (Button)Window.FindName("RefreshProtectionButton");
             updateProgress = (ProgressBar)Window.FindName("UpdateProgressBar");
             configureButton.IsEnabled = false;
             protectionDescription.Visibility = Visibility.Collapsed;
             configureButton.Click += ConfigureSecurity;
+            refreshProtection.Click += RecheckProtection;
             saveButton.Click += SaveExecutable;
             updateButton.Click += UpdateAndRestart;
             updates = new UpdateService(executablePath, releaseNumber);
@@ -229,10 +236,17 @@ namespace JustEnoughTools
             if (!securityChecked && !checkingSecurity) await RefreshSecurityStateAsync();
         }
 
-        async Task RefreshSecurityStateAsync()
+        async void RecheckProtection(object sender, RoutedEventArgs args)
+        {
+            if (!refreshProtection.IsEnabled || protectionTamperHelp.Visibility != Visibility.Visible) return;
+            await RefreshSecurityStateAsync(manual: true);
+        }
+
+        async Task RefreshSecurityStateAsync(bool manual = false)
         {
             if (disposed || closing || checkingSecurity) return;
             checkingSecurity = true;
+            if (manual) SetReport(protectionReport, "Проверяется состояние защиты…");
             RefreshButtons();
             try
             {
@@ -241,7 +255,19 @@ namespace JustEnoughTools
                 if (snapshot == null) throw new InvalidOperationException("Не удалось прочитать состояние защиты Windows.");
                 securityNeedsChanges = snapshot.HasChanges || snapshot.HasUnknown;
                 protectionDescription.Visibility = snapshot.RequiresElevation ? Visibility.Visible : Visibility.Collapsed;
-                if (!securityBusy) SetReport(protectionReport, snapshot.HasUnknown ? snapshot.ToReport().FormatProblems() : null);
+                ActionState realtime = snapshot.RealtimeProtection;
+                if (realtime == null || realtime.State == ActionStateKind.Unknown) KeepProtectionRecheck();
+                else SetProtectionHelp(realtime.State == ActionStateKind.Blocked ? TamperHelpText : null);
+                if (!securityBusy)
+                {
+                    string report = snapshot.HasUnknown ? snapshot.ToReport().FormatProblems() : null;
+                    if (report == null && realtime != null && (realtime.State == ActionStateKind.Unavailable ||
+                        manual && realtime.State != ActionStateKind.Blocked))
+                        report = realtime.Reason;
+                    if (manual && realtime != null && realtime.State == ActionStateKind.NeedsChange)
+                        report += " Нажмите «Отключить», чтобы применить настройку.";
+                    SetReport(protectionReport, report);
+                }
             }
             catch (Exception error)
             {
@@ -251,6 +277,7 @@ namespace JustEnoughTools
                 // startup dialog or a background polling process.
                 securityNeedsChanges = true;
                 protectionDescription.Visibility = Visibility.Collapsed;
+                KeepProtectionRecheck();
                 if (!securityBusy) SetReport(protectionReport, WindowsPowerShell.Explain(error, "Проверка защиты"));
             }
             finally
@@ -259,6 +286,22 @@ namespace JustEnoughTools
                 checkingSecurity = false;
                 if (!disposed && !closing) RefreshButtons();
             }
+        }
+
+        const string TamperHelpText = "«Защита от изменений» блокирует отключение защиты в реальном времени.\n" +
+            SecurityEngine.TamperProtectionInstructions + " Затем нажмите «Проверить снова».";
+
+        void SetProtectionHelp(string message)
+        {
+            if (disposed || closing) return;
+            protectionTamperHint.Text = message ?? "";
+            protectionTamperHelp.Visibility = message == null ? Visibility.Collapsed : Visibility.Visible;
+        }
+
+        void KeepProtectionRecheck()
+        {
+            if (protectionTamperHelp.Visibility == Visibility.Visible)
+                SetProtectionHelp("Не удалось подтвердить состояние защиты в реальном времени. Попробуйте проверить снова.");
         }
 
         async void StartUpdateCheck(object sender, RoutedEventArgs args)
@@ -315,6 +358,7 @@ namespace JustEnoughTools
             tweakUi.Refresh(available, busyTweaks);
             configureButton.IsEnabled = configureSecurity != null && available && !securityBusy && securityChecked &&
                 !checkingSecurity && securityNeedsChanges;
+            refreshProtection.IsEnabled = available && !securityBusy && !checkingSecurity;
             saveButton.IsEnabled = available && !securitySaving;
             iconButton.IsEnabled = available && !securitySaving;
             addToStartMenu.IsEnabled = available && !securitySaving;
@@ -337,6 +381,7 @@ namespace JustEnoughTools
                 SecurityReport result = await configureSecurity();
                 if (result == null) throw new InvalidOperationException("Рабочий процесс не вернул результат настройки.");
                 SetReport(protectionReport, result.FormatProblems());
+                if (result.RealtimeBlockedByTamper) SetProtectionHelp(TamperHelpText);
             }
             catch (Exception error)
             {

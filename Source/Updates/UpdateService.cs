@@ -26,6 +26,7 @@ namespace JustEnoughTools.Updates
         private readonly HttpClient _client;
         private readonly bool _ownsClient;
         private readonly TimeSpan _downloadTimeout;
+        private readonly TimeSpan _manifestRetryDelay;
         private readonly CancellationTokenSource _lifetime = new CancellationTokenSource();
         private readonly object _gate = new object();
         private bool _checking;
@@ -36,7 +37,8 @@ namespace JustEnoughTools.Updates
         public UpdateService(string executablePath, int releaseNumber)
             : this(executablePath, releaseNumber, CreateHttpClient(), true) { }
 
-        internal UpdateService(string executablePath, int releaseNumber, HttpClient client, bool ownsClient = false, TimeSpan? downloadTimeout = null)
+        internal UpdateService(string executablePath, int releaseNumber, HttpClient client, bool ownsClient = false, TimeSpan? downloadTimeout = null,
+            TimeSpan? manifestRetryDelay = null)
         {
             if (string.IsNullOrWhiteSpace(executablePath)) throw new ArgumentException("Не указан путь к программе.", nameof(executablePath));
             if (releaseNumber < 1) throw new ArgumentOutOfRangeException(nameof(releaseNumber));
@@ -47,6 +49,8 @@ namespace JustEnoughTools.Updates
             _ownsClient = ownsClient;
             _downloadTimeout = downloadTimeout ?? TimeSpan.FromMinutes(10);
             if (_downloadTimeout <= TimeSpan.Zero || _downloadTimeout > TimeSpan.FromMinutes(10)) throw new ArgumentOutOfRangeException(nameof(downloadTimeout));
+            _manifestRetryDelay = manifestRetryDelay ?? TimeSpan.FromSeconds(15);
+            if (_manifestRetryDelay <= TimeSpan.Zero || _manifestRetryDelay > TimeSpan.FromMinutes(1)) throw new ArgumentOutOfRangeException(nameof(manifestRetryDelay));
             PreparedUpdate prepared;
             string error;
             _hasPrepared = UpdatePackage.TryRead(_packagePath, _releaseNumber, out prepared, out error);
@@ -251,9 +255,7 @@ namespace JustEnoughTools.Updates
 
         private async Task<UpdateManifest> CheckManifestAsync(bool cached, CancellationToken token)
         {
-            int attempts = cached ? 1 : 3;
-            Exception last = null;
-            for (int attempt = 0; attempt < attempts; attempt++)
+            while (true)
             {
                 using (var timeout = CancellationTokenSource.CreateLinkedTokenSource(token))
                 {
@@ -265,11 +267,15 @@ namespace JustEnoughTools.Updates
                         return UpdatePackage.DeserializeManifest(bytes);
                     }
                     catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
-                    catch (Exception ex) { last = ex; }
+                    catch (Exception ex)
+                    {
+                        if (cached) throw new IOException("Сервер обновлений недоступен.", ex);
+                        Report(UpdateProgressLine.Checking(), details: WindowsPowerShell.Explain(ex, "Проверка манифеста обновления") +
+                            " Проверка будет повторена автоматически.");
+                    }
                 }
-                if (attempt + 1 < attempts) await Task.Delay(TimeSpan.FromSeconds(attempt + 1), token).ConfigureAwait(false);
+                await Task.Delay(_manifestRetryDelay, token).ConfigureAwait(false);
             }
-            throw new IOException("Сервер обновлений недоступен.", last);
         }
 
         private async Task<byte[]> PreparePayloadAsync(UpdateManifest manifest, CancellationToken token)

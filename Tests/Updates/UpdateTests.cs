@@ -28,6 +28,7 @@ namespace JustEnoughTools.Tests
             SameAndOlderReleasesAreIgnored().GetAwaiter().GetResult();
             FailedNewDownloadKeepsPreparedUpdate().GetAwaiter().GetResult();
             FailedManifestKeepsErrorDetails().GetAwaiter().GetResult();
+            ManifestRetryStopsOnCancellation().GetAwaiter().GetResult();
             DeltaRoundTripAndFallback().GetAwaiter().GetResult();
             ChangedBaseCannotBePatched();
             CancellationDoesNotPublish().GetAwaiter().GetResult();
@@ -244,20 +245,57 @@ namespace JustEnoughTools.Tests
 
         private static async Task FailedManifestKeepsErrorDetails()
         {
+            foreach (int remote in new[] { 1, 2 })
             using (var fixture = new Fixture())
             {
-                var handler = new FakeHandler(Manifest(Exe(2), 2), Exe(2), null)
+                var handler = new FakeHandler(Manifest(Exe(remote), remote), Exe(remote), null)
                 { ManifestFailure = new Win32Exception(5, "Тестовый отказ доступа к сети.") };
+                using (var client = new HttpClient(handler))
+                using (var service = new UpdateService(fixture.Executable, 1, client, manifestRetryDelay: TimeSpan.FromMilliseconds(10)))
+                {
+                    UpdateStatus final = null;
+                    int failures = 0;
+                    service.StatusChanged += value =>
+                    {
+                        final = value;
+                        if (value.Details == null) return;
+                        Check(value.Text == UpdateProgressLine.Checking() && value.Details.Contains("Проверка манифеста обновления") &&
+                            value.Details.Contains("Win32=5"), "A retry lost its pending state or native diagnostic.");
+                        if (++failures == 5) handler.ManifestFailure = null;
+                    };
+                    await service.CheckAndPrepareAsync(CancellationToken.None);
+                    Check(failures == 5 && handler.ManifestDownloads == 6, "Manifest checks stopped before recovery or continued after a valid result.");
+                    Check(final != null && final.Details == null && final.Ready == (remote == 2) &&
+                        final.Text == (remote == 2 ? UpdateProgressLine.Ready(2) : UpdateProgressLine.UpToDate(1)),
+                        "Recovery must end in a prepared update or confirmed current release and clear old errors.");
+                    Check(service.HasPreparedUpdate == (remote == 2) && File.Exists(fixture.Package) == (remote == 2),
+                        "Recovery prepared the wrong release.");
+                }
+            }
+        }
+
+        private static async Task ManifestRetryStopsOnCancellation()
+        {
+            foreach (bool dispose in new[] { false, true })
+            using (var fixture = new Fixture())
+            using (var cancellation = new CancellationTokenSource())
+            {
+                var handler = new FakeHandler(Manifest(Exe(2), 2), Exe(2), null)
+                { ManifestFailure = new HttpRequestException("Test offline") };
                 using (var client = new HttpClient(handler))
                 using (var service = new UpdateService(fixture.Executable, 1, client))
                 {
-                    UpdateStatus final = null;
-                    service.StatusChanged += value => final = value;
+                    var retry = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                    service.StatusChanged += status => { if (status.Details != null) retry.TrySetResult(true); };
+                    Task check = service.CheckAndPrepareAsync(cancellation.Token);
+                    Check(await Task.WhenAny(retry.Task, Task.Delay(3000)) == retry.Task, "The offline check never reached its retry delay.");
                     await service.CheckAndPrepareAsync(CancellationToken.None);
-                    Check(final != null && !final.Ready && final.Text == UpdateProgressLine.CheckFailed() &&
-                        final.Details.Contains("Проверка манифеста обновления") && final.Details.Contains("Win32=5"),
-                        "A handled manifest failure lost its stage/native code before reaching the UI.");
-                    Check(!service.HasPreparedUpdate && !File.Exists(fixture.Package), "A failed manifest check published an update.");
+                    Check(handler.ManifestDownloads == 1 && !check.IsCompleted, "Concurrent checks bypassed the single retry loop.");
+                    if (dispose) service.Dispose();
+                    else cancellation.Cancel();
+                    Check(await Task.WhenAny(check, Task.Delay(3000)) == check, "Cancellation did not interrupt the retry delay.");
+                    await check;
+                    Check(handler.ManifestDownloads == 1 && !File.Exists(fixture.Package), "A cancelled check retried or published a package.");
                 }
             }
         }
@@ -361,6 +399,7 @@ namespace JustEnoughTools.Tests
             internal FakeHandler(UpdateManifest manifest, byte[] exe, byte[] patch) { _manifest = manifest; _exe = exe; _patch = patch; }
             internal int ExecutableDownloads;
             internal int PatchDownloads;
+            internal int ManifestDownloads;
             internal bool BlockExecutable;
             internal Exception ManifestFailure;
             internal readonly TaskCompletionSource<bool> ExecutableStarted = new TaskCompletionSource<bool>();
@@ -369,6 +408,7 @@ namespace JustEnoughTools.Tests
                 byte[] content;
                 if (request.RequestUri.AbsolutePath.EndsWith("/update.json", StringComparison.Ordinal))
                 {
+                    ManifestDownloads++;
                     if (ManifestFailure != null) throw ManifestFailure;
                     content = UpdatePackage.SerializeManifest(_manifest);
                 }

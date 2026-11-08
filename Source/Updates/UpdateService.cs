@@ -20,6 +20,7 @@ namespace JustEnoughTools.Updates
     {
         internal const string ExecutableAssetName = "JustEnoughTools.exe";
         private const string ReleaseBase = "https://github.com/MarkZamore/JustEnoughTools/releases/download/latest/";
+        private const string ReleaseApi = "https://api.github.com/repos/MarkZamore/JustEnoughTools/releases/";
         private readonly string _executablePath;
         private readonly string _packagePath;
         private readonly int _releaseNumber;
@@ -259,7 +260,7 @@ namespace JustEnoughTools.Updates
             {
                 using (var timeout = CancellationTokenSource.CreateLinkedTokenSource(token))
                 {
-                    timeout.CancelAfter(cached ? TimeSpan.FromSeconds(5) : TimeSpan.FromSeconds(20));
+                    timeout.CancelAfter(TimeSpan.FromSeconds(20));
                     try
                     {
                         var uri = new Uri(ReleaseBase + "update.json?cache=" + DateTime.UtcNow.Ticks.ToString(System.Globalization.CultureInfo.InvariantCulture));
@@ -344,6 +345,42 @@ namespace JustEnoughTools.Updates
 
         private async Task<byte[]> DownloadBytesAsync(Uri uri, int limit, long? expectedSize, string expectedHash, int? release, CancellationToken token)
         {
+            Exception directError;
+            try
+            {
+                using (var direct = CancellationTokenSource.CreateLinkedTokenSource(token))
+                {
+                    direct.CancelAfter(TimeSpan.FromSeconds(release.HasValue ? 30 : 8));
+                    return await DownloadFromUriAsync(uri, limit, expectedSize, expectedHash, release, direct.Token).ConfigureAwait(false);
+                }
+            }
+            catch (Exception error) when (!token.IsCancellationRequested &&
+                (error is HttpRequestException || error is OperationCanceledException || error is WebException ||
+                 (error is IOException && !(error is InvalidDataException))))
+            { directError = error; }
+            token.ThrowIfCancellationRequested();
+            try
+            {
+                if (uri.Host != "github.com" || !uri.AbsoluteUri.StartsWith(ReleaseBase, StringComparison.Ordinal))
+                    throw new InvalidDataException("Для этого адреса отсутствует резервный маршрут GitHub.");
+                string name = Uri.UnescapeDataString(uri.AbsolutePath.Substring(new Uri(ReleaseBase).AbsolutePath.Length));
+                if (string.IsNullOrEmpty(name) || name.IndexOfAny(new[] { '/', '\\' }) >= 0)
+                    throw new InvalidDataException("Недопустимое имя файла выпуска.");
+                byte[] metadata = await DownloadFromUriAsync(new Uri(ReleaseApi + "tags/latest?cache=" + Guid.NewGuid().ToString("N")),
+                    1024 * 1024, null, null, null, token).ConfigureAwait(false);
+                GitHubAsset asset = GitHubRelease.SelectAsset(metadata, name, limit, expectedSize, expectedHash);
+                var assetUri = new Uri(ReleaseApi + "assets/" + asset.Id.ToString(System.Globalization.CultureInfo.InvariantCulture) +
+                    "?cache=" + Guid.NewGuid().ToString("N"));
+                return await DownloadFromUriAsync(assetUri, limit, asset.Size, asset.Sha256, release, token, binary: true).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
+            catch (Exception apiError)
+            { throw new AggregateException("Прямой и резервный маршруты обновления недоступны.", directError, apiError); }
+        }
+
+        private async Task<byte[]> DownloadFromUriAsync(Uri uri, int limit, long? expectedSize, string expectedHash, int? release,
+            CancellationToken token, bool binary = false)
+        {
             // With ResponseHeadersRead, HttpClient.Timeout stops covering the
             // body. Framework's ConnectStream can also ignore a ReadAsync token;
             // close the response/stream on cancellation to interrupt that read.
@@ -355,7 +392,7 @@ namespace JustEnoughTools.Updates
                 Stream input = null;
                 try
                 {
-                    response = await SendWithRedirectsAsync(uri, cancel).ConfigureAwait(false);
+                    response = await SendWithRedirectsAsync(uri, cancel, binary).ConfigureAwait(false);
                     using (cancel.Register(() =>
                     {
                         try { if (input != null) input.Dispose(); } catch { }
@@ -412,7 +449,7 @@ namespace JustEnoughTools.Updates
             }
         }
 
-        private async Task<HttpResponseMessage> SendWithRedirectsAsync(Uri initialUri, CancellationToken token)
+        private async Task<HttpResponseMessage> SendWithRedirectsAsync(Uri initialUri, CancellationToken token, bool binary)
         {
             Uri uri = initialUri;
             for (int redirects = 0; redirects <= 5; redirects++)
@@ -421,6 +458,9 @@ namespace JustEnoughTools.Updates
                 using (var request = new HttpRequestMessage(HttpMethod.Get, uri))
                 {
                     request.Headers.CacheControl = new CacheControlHeaderValue { NoCache = true, NoStore = true };
+                    request.Headers.Pragma.ParseAdd("no-cache");
+                    if (binary) request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/octet-stream"));
+                    else if (uri.Host == "api.github.com") request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
                     HttpResponseMessage response = await _client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, token).ConfigureAwait(false);
                     int code = (int)response.StatusCode;
                     if (code != 301 && code != 302 && code != 303 && code != 307 && code != 308) return response;
@@ -476,6 +516,8 @@ namespace JustEnoughTools.Updates
             if (uri == null || !uri.IsAbsoluteUri || uri.Scheme != Uri.UriSchemeHttps || !string.IsNullOrEmpty(uri.UserInfo) || !uri.IsDefaultPort)
                 throw new InvalidDataException("Адрес обновления должен использовать HTTPS.");
             string host = uri.Host.ToLowerInvariant();
+            if (host == "api.github.com" && Regex.IsMatch(uri.AbsolutePath,
+                @"\A/repos/MarkZamore/JustEnoughTools/releases/(?:tags/latest|assets/[1-9][0-9]*)\z", RegexOptions.CultureInvariant)) return;
             if (host != "github.com" && host != "objects.githubusercontent.com" && host != "github-releases.githubusercontent.com" && host != "release-assets.githubusercontent.com")
                 throw new InvalidDataException("Недопустимый сервер обновлений.");
         }

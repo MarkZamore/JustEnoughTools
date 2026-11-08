@@ -103,6 +103,7 @@ namespace JustEnoughTools.Tests
 
             protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token)
             {
+                if (request.RequestUri.Host == "api.github.com") return new HttpResponseMessage(HttpStatusCode.ServiceUnavailable);
                 if (request.RequestUri.AbsolutePath.EndsWith("/update.json", StringComparison.Ordinal))
                     return new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(_manifest) };
                 // Only this test transport substitutes a local endpoint. The

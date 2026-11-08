@@ -29,6 +29,7 @@ namespace JustEnoughTools.Tests
             FailedNewDownloadKeepsPreparedUpdate().GetAwaiter().GetResult();
             FailedManifestKeepsErrorDetails().GetAwaiter().GetResult();
             ManifestRetryStopsOnCancellation().GetAwaiter().GetResult();
+            ReleaseApiFallback().GetAwaiter().GetResult();
             DeltaRoundTripAndFallback().GetAwaiter().GetResult();
             ChangedBaseCannotBePatched();
             CancellationDoesNotPublish().GetAwaiter().GetResult();
@@ -300,6 +301,96 @@ namespace JustEnoughTools.Tests
             }
         }
 
+        private static async Task ReleaseApiFallback()
+        {
+            for (int scenario = 0; scenario <= 12; scenario++)
+            using (var fixture = new Fixture())
+            using (var caller = new CancellationTokenSource(TimeSpan.FromSeconds(4)))
+            {
+                var handler = new ApiHandler(scenario, Manifest(Exe(2), 2), Exe(2));
+                using (var client = new HttpClient(handler))
+                using (var service = new UpdateService(fixture.Executable, 1, client,
+                    downloadTimeout: scenario == 3 ? TimeSpan.FromMilliseconds(50) : TimeSpan.FromSeconds(3)))
+                {
+                    bool claimedCurrent = false;
+                    service.StatusChanged += status =>
+                    {
+                        claimedCurrent |= status.Text == UpdateProgressLine.UpToDate(1);
+                        if (status.Details != null) caller.Cancel();
+                    };
+                    if (scenario >= 10) caller.CancelAfter(100);
+                    await service.CheckAndPrepareAsync(caller.Token);
+                    Check(service.HasPreparedUpdate == (scenario <= 3), "Incorrect API fallback outcome for scenario " + scenario);
+                    Check(!claimedCurrent, "An unverified API response was treated as a current release.");
+                    if (scenario == 0) Check(handler.ApiRequests == 0, "Successful direct downloads must not query the API.");
+                    if (scenario >= 1 && scenario <= 3) Check(handler.MetadataRequests == 2 && handler.AssetRequests == 2,
+                        "Both manifest and payload must support the API fallback.");
+                    if (scenario == 10) Check(handler.ApiRequests == 0, "Caller cancellation must not trigger the fallback.");
+                    if (scenario == 11) Check(handler.MetadataRequests == 1 && handler.AssetRequests == 0, "Cancellation must interrupt API metadata.");
+                    if (scenario == 12) Check(handler.AssetRequests == 1, "Cancellation must interrupt API asset download.");
+                    if (scenario <= 3)
+                    {
+                        PreparedUpdate prepared;
+                        string error;
+                        Check(UpdatePackage.TryRead(fixture.Package, 1, out prepared, out error), error);
+                    }
+                    else Check(!File.Exists(fixture.Package), "An invalid or cancelled API transfer published a package.");
+                }
+            }
+        }
+
+        private sealed class ApiHandler : HttpMessageHandler
+        {
+            private readonly int scenario;
+            private readonly byte[] manifest, payload;
+            internal int ApiRequests, MetadataRequests, AssetRequests;
+            internal ApiHandler(int scenario, UpdateManifest manifest, byte[] payload)
+            { this.scenario = scenario; this.manifest = UpdatePackage.SerializeManifest(manifest); this.payload = payload; }
+
+            protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token)
+            {
+                Check(request.Headers.CacheControl.NoCache && request.Headers.CacheControl.NoStore, "Update requests must bypass caches.");
+                string path = request.RequestUri.AbsolutePath;
+                if (request.RequestUri.Host == "api.github.com")
+                {
+                    ApiRequests++;
+                    Check(request.RequestUri.Query.Contains("cache="), "API requests need a fresh query.");
+                    if (path.EndsWith("tags/latest", StringComparison.Ordinal))
+                    {
+                        MetadataRequests++;
+                        if (scenario == 11) await Task.Delay(Timeout.Infinite, token);
+                        string manifestAsset = Asset(101, "update.json", manifest);
+                        string assets = manifestAsset + "," + Asset(102, "JustEnoughTools.exe", payload);
+                        if (scenario == 5) assets += "," + manifestAsset;
+                        string json = "{\"tag_name\":\"latest\",\"draft\":" + (scenario == 6 ? "true" : "false") +
+                            ",\"prerelease\":false,\"published_at\":\"2026-11-08T00:00:00Z\",\"assets\":[" + assets + "]}";
+                        if (scenario == 7) json = json.Replace("sha256:", "sha512:");
+                        if (scenario == 8) json = json.Replace("\"id\":101", "\"id\":0");
+                        return Response(System.Text.Encoding.UTF8.GetBytes(json));
+                    }
+                    AssetRequests++;
+                    Check(request.Headers.Accept.Any(value => value.MediaType == "application/octet-stream"), "API binary download needs octet-stream.");
+                    if (scenario == 12) await Task.Delay(Timeout.Infinite, token);
+                    Check(path.EndsWith("/101", StringComparison.Ordinal) || path.EndsWith("/102", StringComparison.Ordinal), "Untrusted API asset ID.");
+                    byte[] content = path.EndsWith("/101", StringComparison.Ordinal) ? manifest : payload;
+                    if (scenario == 4 || (scenario == 9 && path.EndsWith("/102", StringComparison.Ordinal))) content = new byte[content.Length];
+                    return Response(content);
+                }
+                if (scenario == 0) return Response(path.EndsWith("update.json", StringComparison.Ordinal) ? manifest : payload);
+                if (scenario == 2) throw new HttpRequestException("Direct connection failed.");
+                if (scenario == 3 || scenario == 10) await Task.Delay(Timeout.Infinite, token);
+                return new HttpResponseMessage(HttpStatusCode.GatewayTimeout);
+            }
+
+            private static string Asset(long id, string name, byte[] content)
+            {
+                return "{\"id\":" + id + ",\"name\":\"" + name + "\",\"state\":\"uploaded\",\"size\":" + content.Length +
+                    ",\"digest\":\"sha256:" + UpdatePackage.HashBytes(content) + "\",\"url\":\"https://untrusted.invalid/file\"}";
+            }
+            private static HttpResponseMessage Response(byte[] content)
+            { return new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(content) }; }
+        }
+
         private static void ChangedBaseCannotBePatched()
         {
             using (var fixture = new Fixture())
@@ -405,6 +496,7 @@ namespace JustEnoughTools.Tests
             internal readonly TaskCompletionSource<bool> ExecutableStarted = new TaskCompletionSource<bool>();
             protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token)
             {
+                if (request.RequestUri.Host == "api.github.com") return new HttpResponseMessage(HttpStatusCode.ServiceUnavailable);
                 byte[] content;
                 if (request.RequestUri.AbsolutePath.EndsWith("/update.json", StringComparison.Ordinal))
                 {
